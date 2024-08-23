@@ -36,7 +36,7 @@ func (js *JunkServer) Handler2(args int, reply *string) {
 func (js *JunkServer) Handler3(args int, reply *int) {
 	js.mu.Lock()
 	defer js.mu.Unlock()
-	time.Sleep(20 * time.Second)
+	time.Sleep(1 * time.Second)
 	*reply = -args
 }
 

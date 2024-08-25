@@ -11,26 +11,26 @@ import (
 type logTopic string
 
 const (
-	DError logTopic = "ERRO" // level = 3
-	DWarn  logTopic = "WARN" // level = 2
-	DInfo  logTopic = "INFO" // level = 1
-	DDebug logTopic = "DBUG" // level = 0
+	DError logTopic = "ERROR" // level = 3
+	DWarn  logTopic = "WARN"  // level = 2
+	DInfo  logTopic = "INFO"  // level = 1
+	DDebug logTopic = "DEBUG" // level = 0
 
-	// level = 1
-	DClient  logTopic = "CLNT"
-	DCommit  logTopic = "CMIT"
+	// level 1 topics
+	DClient  logTopic = "CLIENT"
+	DCommit  logTopic = "COMMIT"
 	DDrop    logTopic = "DROP"
-	DLeader  logTopic = "LEAD"
-	DLog     logTopic = "LOG1" // sending log
-	DLog2    logTopic = "LOG2" // receiving log
-	DPersist logTopic = "PERS"
+	DLeader  logTopic = "LEADER"
+	DLog     logTopic = "SEND"    // sending log
+	DLog2    logTopic = "RECEIVE" // receiving log
+	DPersist logTopic = "PERSIST"
 	DSnap    logTopic = "SNAP"
 	DTerm    logTopic = "TERM"
 	DTest    logTopic = "TEST"
-	DTimer   logTopic = "TIMR"
-	DTrace   logTopic = "TRCE"
+	DTimer   logTopic = "TIMER"
+	DTrace   logTopic = "TRACE"
 	DVote    logTopic = "VOTE"
-	DApply   logTopic = "APLY"
+	DApply   logTopic = "APPLY"
 )
 
 func getTopicLevel(topic logTopic) int {
@@ -69,16 +69,28 @@ func init() {
 	logStart = time.Now()
 
 	// do not print verbose date
-	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
+	log.SetFlags(log.Flags() & ^(log.Ldate | log.Ltime))
 }
 
-func LOG(peerId int, term int, topic logTopic, format string, a ...interface{}) {
+func SysLog(peerId int, term int, topic logTopic, format string, a ...interface{}) {
 	topicLevel := getTopicLevel(topic)
-	if logLevel <= topicLevel {
-		time := time.Since(logStart).Microseconds()
-		time /= 100
-		prefix := fmt.Sprintf("%06d T%04d %v S%d ", time, term, string(topic), peerId)
+	if topicLevel >= logLevel {
+		curTime := time.Since(logStart).Microseconds() / 100
+		prefix := fmt.Sprintf("%06d T%04d %v S%d ", curTime, term, string(topic), peerId)
 		format = prefix + format
 		log.Printf(format, a...)
+	}
+}
+
+func getRole(role Role) string {
+	switch role {
+	case Leader:
+		return "leader"
+	case Follower:
+		return "follower"
+	case Candidate:
+		return "candidate"
+	default:
+		return "unknown role"
 	}
 }

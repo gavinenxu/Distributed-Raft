@@ -289,7 +289,7 @@ func (nw *Network) processReq(req requestMessage) {
 	// the server has been killed. this is needed to avoid
 	// situation in which a client gets a positive reply
 	// to an Append, but the server persisted the update
-	// into the old Persister. config.go is careful to call
+	// into the old Persister. tester.go is careful to call
 	// DeleteServer() before superseding the Persister.
 	serverDead = nw.isServerDead(req.clientEndName, servername, server)
 

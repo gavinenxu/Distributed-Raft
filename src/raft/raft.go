@@ -93,14 +93,14 @@ func NewRaft(peers []*rpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
-	go rf.ticker()
+	go rf.electionTicker()
 
 	return rf
 }
 
-// GetStateLocked return currentTerm and whether this server
+// GetState return currentTerm and whether this server
 // believes it is the leader.
-func (rf *Raft) GetStateLocked() (int, bool) {
+func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -158,20 +158,50 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 type RequestVoteArgs struct {
 	// Your data here (PartA, PartB).
+	Term        int
+	CandidateId int
+	//LastLogIndex int
+	//LastLogTerm  int
 }
 
 // RequestVote RPC reply structure.
 
 type RequestVoteReply struct {
 	// Your data here (PartA).
+	Term        int
+	VoteGranted bool
 }
 
-// RequestVote RequestVote RPC handler.
+// RequestVote RPC handler. Other Candidate ask vote from current raft user
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (PartA, PartB).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
+
+	if rf.currentTerm > args.Term {
+		SysLog(rf.me, rf.currentTerm, DVote, "-> S%d. Reject vote: higher Term T%d>T%d", rf.me, rf.currentTerm, args.Term)
+		return
+	}
+
+	if rf.currentTerm < args.Term {
+		// update term and current raft become a follower, reset votedFor to NotVoted
+		rf.becomeFollowerNoLock(args.Term)
+	} else if rf.votedFor != args.CandidateId {
+		// Term equal, but want to vote for different candidate
+		SysLog(rf.me, rf.currentTerm, DVote, "-> S%d. Reject vote: already vote S%d", rf.me, rf.votedFor)
+		return
+	}
+
+	reply.VoteGranted = true
+	rf.votedFor = args.CandidateId
+	rf.resetElectionTimerNoLock()
+	SysLog(rf.me, rf.currentTerm, DVote, "-> S%d. Vote granted", rf.me)
 }
 
-// example code to send a RequestVote RPC to a server.
+// Send a RequestVote RPC from candidate to a server.
 // server is the index of the target server in rf.peers[].
 // expects RPC arguments in args.
 // fills in *reply with RPC reply, so caller should
@@ -198,9 +228,68 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
+// return whether Rpc call succeed or not
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
+}
+
+func (rf *Raft) startElectionFromCandidate(term int) {
+	// always vote for Candidate self
+	votes := 1
+
+	// To check if Candidate could get a vote from its peer
+	requestVoteFromPeer := func(peer int, args *RequestVoteArgs) {
+		reply := &RequestVoteReply{}
+		ok := rf.sendRequestVote(peer, args, reply)
+		if !ok || !reply.VoteGranted {
+			return
+		}
+
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+
+		// raft user Term is larger, to become follower for current Candidate
+		if reply.Term > rf.currentTerm {
+			rf.becomeFollowerNoLock(reply.Term)
+			return
+		}
+
+		// check raft is still a Candidate and term not changed while it's requesting
+		if rf.contextChangedNoLock(term, Candidate) {
+			SysLog(rf.me, rf.currentTerm, DVote, "Lost context, abort requestVoteFromPeer in T%d", rf.currentTerm)
+			return
+		}
+
+		votes++
+
+		if votes > len(rf.peers)/2 {
+			rf.becomeLeaderNoLock()
+			go rf.replicaTicker(term)
+		}
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.contextChangedNoLock(term, Candidate) {
+		SysLog(rf.me, rf.currentTerm, DVote, "Lost context, abort startElectionFromCandidate in T%d", rf.currentTerm)
+		return
+	}
+
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			continue
+		}
+
+		args := &RequestVoteArgs{
+			Term:        term,
+			CandidateId: rf.me,
+		}
+
+		go requestVoteFromPeer(i, args)
+	}
+
 }
 
 // Start the service using Raft (e.g. a k/v server) wants to start
@@ -244,20 +333,32 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) ticker() {
-	for rf.killed() == false {
+func (rf *Raft) electionTicker() {
+	for !rf.killed() {
 
-		// Your code here (PartA)
 		// Check if a leader election should be started.
+		rf.mu.Lock()
+		if rf.role != Leader && rf.isElectionTimeoutNoLock() {
+			// become a Candidate from Follower or Original Candidate
+			rf.becomeCandidateNoLock()
+			// since outside layer hold a lock, we async call a startElectionFromCandidate
+			go rf.startElectionFromCandidate(rf.currentTerm)
+		}
+		rf.mu.Unlock()
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
+		ms := 50 + rand.Int63n(300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
 
-func (rf *Raft) becomeFollower(term int) bool {
+// start a heart beat to all followers from leader
+func (rf *Raft) replicaTicker(term int) {
+
+}
+
+func (rf *Raft) becomeFollowerNoLock(term int) bool {
 	if rf.currentTerm > term {
 		SysLog(rf.me, rf.currentTerm, DError, "Can't become follower, lower term is: %d, current term is: %d", term, rf.currentTerm)
 		return false
@@ -266,6 +367,7 @@ func (rf *Raft) becomeFollower(term int) bool {
 	SysLog(rf.me, rf.currentTerm, DLog, "%s->follower, for T%s->T%s", getRole(rf.role), rf.currentTerm, term)
 
 	rf.role = Follower
+	// reset vote while update term
 	if rf.currentTerm < term {
 		rf.votedFor = NotVoted
 	}
@@ -273,7 +375,7 @@ func (rf *Raft) becomeFollower(term int) bool {
 	return true
 }
 
-func (rf *Raft) becomeCandidate() bool {
+func (rf *Raft) becomeCandidateNoLock() bool {
 	if rf.role == Leader {
 		SysLog(rf.me, rf.currentTerm, DError, "Leader can't become candidate")
 		return false
@@ -288,7 +390,7 @@ func (rf *Raft) becomeCandidate() bool {
 	return true
 }
 
-func (rf *Raft) becomeLeader() bool {
+func (rf *Raft) becomeLeaderNoLock() bool {
 	if rf.role != Candidate {
 		SysLog(rf.me, rf.currentTerm, DError, "Only candidate can become leader")
 		return false
@@ -299,4 +401,20 @@ func (rf *Raft) becomeLeader() bool {
 	rf.role = Leader
 
 	return true
+}
+
+func (rf *Raft) resetElectionTimerNoLock() {
+	rf.electionStart = time.Now()
+
+	timeoutRange := int64(electionTimeoutMax - electionTimeoutMin)
+	rf.electionTimeout = electionTimeoutMin + time.Duration(rand.Int63n(timeoutRange))
+}
+
+func (rf *Raft) isElectionTimeoutNoLock() bool {
+	return time.Since(rf.electionStart) > rf.electionTimeout
+}
+
+// To check context if other raft send request to change current raft context, and it's approved by cur raft
+func (rf *Raft) contextChangedNoLock(term int, role Role) bool {
+	return rf.currentTerm != term || rf.role != role
 }

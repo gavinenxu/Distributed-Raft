@@ -431,7 +431,7 @@ func (tr *tester) checkOneLeader() int {
 		leaders := make(map[int][]int)
 		for i := 0; i < tr.n; i++ {
 			if tr.connected[i] {
-				if term, leader := tr.rafts[i].GetStateLocked(); leader {
+				if term, leader := tr.rafts[i].GetState(); leader {
 					leaders[term] = append(leaders[term], i)
 				}
 			}
@@ -460,7 +460,7 @@ func (tr *tester) checkTerms() int {
 	term := -1
 	for i := 0; i < tr.n; i++ {
 		if tr.connected[i] {
-			xterm, _ := tr.rafts[i].GetStateLocked()
+			xterm, _ := tr.rafts[i].GetState()
 			if term == -1 {
 				term = xterm
 			} else if term != xterm {
@@ -476,7 +476,7 @@ func (tr *tester) checkTerms() int {
 func (tr *tester) checkNoLeader() {
 	for i := 0; i < tr.n; i++ {
 		if tr.connected[i] {
-			_, isLeader := tr.rafts[i].GetStateLocked()
+			_, isLeader := tr.rafts[i].GetState()
 			if isLeader {
 				tr.t.Fatalf("expected no leader among connected servers, but %v claims to be leader", i)
 			}
@@ -524,7 +524,7 @@ func (tr *tester) wait(index int, n int, startTerm int) interface{} {
 		}
 		if startTerm > -1 {
 			for _, r := range tr.rafts {
-				if t, _ := r.GetStateLocked(); t > startTerm {
+				if t, _ := r.GetState(); t > startTerm {
 					// someone has moved on
 					// can no longer guarantee that we'll "win"
 					return -1

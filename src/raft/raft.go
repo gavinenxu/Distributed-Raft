@@ -154,7 +154,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-// RequestVote RPC arguments structure.
+// RequestVote Invoked by candidate to gather votes
 
 type RequestVoteArgs struct {
 	// Your data here (PartA, PartB).
@@ -164,15 +164,13 @@ type RequestVoteArgs struct {
 	//LastLogTerm  int
 }
 
-// RequestVote RPC reply structure.
-
 type RequestVoteReply struct {
 	// Your data here (PartA).
 	Term        int
 	VoteGranted bool
 }
 
-// RequestVote RPC handler. Other Candidate ask vote from current raft user
+// RequestVote RPC handler. Other candidate ask vote from current raft user
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (PartA, PartB).
 	rf.mu.Lock()
@@ -265,7 +263,7 @@ func (rf *Raft) startElectionFromCandidate(term int) {
 
 		if votes > len(rf.peers)/2 {
 			rf.becomeLeaderNoLock()
-			go rf.replicaTicker(term)
+			go rf.replicateTicker(term)
 		}
 	}
 
@@ -289,7 +287,82 @@ func (rf *Raft) startElectionFromCandidate(term int) {
 
 		go requestVoteFromPeer(i, args)
 	}
+}
 
+// AppendEntries Invoked by leader to replicate log entries
+// And also used for heart beat
+
+type AppendEntriesArgs struct {
+	Term     int
+	LeaderId int
+	//PrevLogIndex int
+	//PrevLogTerm  int
+}
+
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.currentTerm
+	reply.Success = false
+
+	if args.Term < rf.currentTerm {
+		SysLog(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log", args.LeaderId)
+		return
+	}
+
+	rf.becomeFollowerNoLock(args.Term)
+
+	reply.Success = true
+	rf.resetElectionTimerNoLock()
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
+
+func (rf *Raft) startReplicateLogEntries(term int) bool {
+
+	sendLogEntriesToPeer := func(peer int, args *AppendEntriesArgs) {
+		reply := &AppendEntriesReply{}
+		ok := rf.sendAppendEntries(peer, args, reply)
+		if !ok || !reply.Success {
+			return
+		}
+
+		if reply.Term > rf.currentTerm {
+			rf.becomeFollowerNoLock(reply.Term)
+		}
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.contextChangedNoLock(term, Candidate) {
+		SysLog(rf.me, rf.currentTerm, DVote, "Lost context, abort startReplicateLogEntries in T%d", rf.currentTerm)
+		return false
+	}
+
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			continue
+		}
+
+		args := &AppendEntriesArgs{
+			Term:     term,
+			LeaderId: rf.me,
+		}
+
+		go sendLogEntriesToPeer(i, args)
+	}
+
+	return true
 }
 
 // Start the service using Raft (e.g. a k/v server) wants to start
@@ -354,8 +427,14 @@ func (rf *Raft) electionTicker() {
 }
 
 // start a heart beat to all followers from leader
-func (rf *Raft) replicaTicker(term int) {
+func (rf *Raft) replicateTicker(term int) {
+	for !rf.killed() {
+		if ok := rf.startReplicateLogEntries(rf.currentTerm); !ok {
+			return
+		}
 
+		time.Sleep(replicateInterval)
+	}
 }
 
 func (rf *Raft) becomeFollowerNoLock(term int) bool {

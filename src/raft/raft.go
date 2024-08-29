@@ -196,7 +196,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = true
 	rf.votedFor = args.CandidateId
 	rf.resetElectionTimerNoLock()
-	SysLog(rf.me, rf.currentTerm, DVote, "-> S%d. Vote granted", rf.me)
+	SysLog(rf.me, rf.currentTerm, DVote, "-> S%d. Vote granted", rf.votedFor)
 }
 
 // Send a RequestVote RPC from candidate to a server.
@@ -344,7 +344,7 @@ func (rf *Raft) startReplicateLogEntries(term int) bool {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if rf.contextChangedNoLock(term, Candidate) {
+	if rf.contextChangedNoLock(term, Leader) {
 		SysLog(rf.me, rf.currentTerm, DVote, "Lost context, abort startReplicateLogEntries in T%d", rf.currentTerm)
 		return false
 	}
@@ -443,7 +443,7 @@ func (rf *Raft) becomeFollowerNoLock(term int) bool {
 		return false
 	}
 
-	SysLog(rf.me, rf.currentTerm, DLog, "%s->follower, for T%s->T%s", getRole(rf.role), rf.currentTerm, term)
+	SysLog(rf.me, rf.currentTerm, DLog, "%s->follower, for T%d->T%d", getRole(rf.role), rf.currentTerm, term)
 
 	rf.role = Follower
 	// reset vote while update term
@@ -460,7 +460,7 @@ func (rf *Raft) becomeCandidateNoLock() bool {
 		return false
 	}
 
-	SysLog(rf.me, rf.currentTerm, DLog, "%s->candidate, for T%s", getRole(rf.role), rf.currentTerm+1)
+	SysLog(rf.me, rf.currentTerm, DLog, "%s->candidate, for T%d", getRole(rf.role), rf.currentTerm+1)
 
 	rf.currentTerm++
 	rf.role = Candidate
@@ -475,7 +475,7 @@ func (rf *Raft) becomeLeaderNoLock() bool {
 		return false
 	}
 
-	SysLog(rf.me, rf.currentTerm, DLog, "leader, for T%s", rf.currentTerm+1)
+	SysLog(rf.me, rf.currentTerm, DLog, "Leader, for T%d", rf.currentTerm+1)
 
 	rf.role = Leader
 

@@ -11,26 +11,26 @@ import (
 type logTopic string
 
 const (
-	DError logTopic = "ERROR" // level = 3
-	DWarn  logTopic = "WARN"  // level = 2
-	DInfo  logTopic = "INFO"  // level = 1
-	DDebug logTopic = "DEBUG" // level = 0
+	DError logTopic = "ERRO" // level = 3
+	DWarn  logTopic = "WARN" // level = 2
+	DInfo  logTopic = "INFO" // level = 1
+	DDebug logTopic = "DBUG" // level = 0
 
 	// level 1 topics
-	DClient  logTopic = "CLIENT"
-	DCommit  logTopic = "COMMIT"
+	DClient  logTopic = "CLNT"
+	DCommit  logTopic = "CMIT"
 	DDrop    logTopic = "DROP"
-	DLeader  logTopic = "LEADER"
-	DLog     logTopic = "SEND"    // sending log
-	DLog2    logTopic = "RECEIVE" // receiving log
-	DPersist logTopic = "PERSIST"
+	DLeader  logTopic = "LEAD"
+	DLog1    logTopic = "LOG1" // sending log
+	DLog2    logTopic = "LOG2" // receiving log
+	DPersist logTopic = "PERS"
 	DSnap    logTopic = "SNAP"
 	DTerm    logTopic = "TERM"
 	DTest    logTopic = "TEST"
-	DTimer   logTopic = "TIMER"
-	DTrace   logTopic = "TRACE"
+	DTimer   logTopic = "TIMR"
+	DTrace   logTopic = "TRCE"
 	DVote    logTopic = "VOTE"
-	DApply   logTopic = "APPLY"
+	DApply   logTopic = "APLY"
 )
 
 func getTopicLevel(topic logTopic) int {

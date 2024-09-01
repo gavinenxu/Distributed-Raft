@@ -549,8 +549,8 @@ func (tr *tester) wait(index int, n int, startTerm int) interface{} {
 // as do the threads that read from applyCh.
 // returns index.
 // if retry==true, may submit the command multiple
-// times, in case a leader fails just after Start().
-// if retry==false, calls Start() only once, in order
+// times, in case a leader fails just after StartAppendCommandInLeader().
+// if retry==false, calls StartAppendCommandInLeader() only once, in order
 // to simplify the early Lab 2B tests.
 func (tr *tester) one(cmd interface{}, expectedServers int, retry bool) int {
 	t0 := time.Now()
@@ -567,7 +567,7 @@ func (tr *tester) one(cmd interface{}, expectedServers int, retry bool) int {
 			}
 			tr.mu.Unlock()
 			if rf != nil {
-				index1, _, ok := rf.Start(cmd)
+				index1, _, ok := rf.StartAppendCommandInLeader(cmd)
 				if ok {
 					index = index1
 					break

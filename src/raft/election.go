@@ -8,11 +8,10 @@ import (
 // RequestVote Invoked by candidate to gather votes
 
 type RequestVoteArgs struct {
-	// Your data here (PartA, PartB).
-	Term        int
-	CandidateId int
-	//LastLogIndex int
-	//LastLogTerm  int
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 type RequestVoteReply struct {
@@ -21,6 +20,7 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
+// background thread from a raft server to start an election
 func (rf *Raft) electionTicker() {
 	for !rf.killed() {
 
@@ -52,7 +52,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = false
 
 	if rf.currentTerm > args.Term {
-		SysLog(rf.me, rf.currentTerm, DVote, "-> S%d. Reject vote: higher Term T%d>T%d", rf.me, rf.currentTerm, args.Term)
+		SysLog(rf.me, rf.currentTerm, DVote, "-> S%d. Reject vote: higher Term T%d>T%d", args.CandidateId, rf.currentTerm, args.Term)
 		return
 	}
 
@@ -61,7 +61,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.becomeFollowerNoLock(args.Term)
 	} else if rf.votedFor != args.CandidateId {
 		// Term equal, but want to vote for different candidate
-		SysLog(rf.me, rf.currentTerm, DVote, "-> S%d. Reject vote: already vote S%d", rf.me, rf.votedFor)
+		SysLog(rf.me, rf.currentTerm, DVote, "-> S%d. Reject vote: already vote S%d", args.CandidateId, rf.votedFor)
+		return
+	}
+
+	// check candidate's log is more update to date
+	if rf.isLogMoreUpdateToDateNoLock(args.LastLogTerm, args.LastLogIndex) {
+		SysLog(rf.me, rf.currentTerm, DVote, "-> S%d. Reject vote: Candidate log less update-to-date", args.CandidateId)
 		return
 	}
 
@@ -111,8 +117,7 @@ func (rf *Raft) startElectionFromCandidate(term int) {
 	// To check if Candidate could get a vote from its peer
 	requestVoteFromPeer := func(peer int, args *RequestVoteArgs) {
 		reply := &RequestVoteReply{}
-		ok := rf.sendRequestVote(peer, args, reply)
-		if !ok || !reply.VoteGranted {
+		if ok := rf.sendRequestVote(peer, args, reply); !ok {
 			return
 		}
 
@@ -125,9 +130,13 @@ func (rf *Raft) startElectionFromCandidate(term int) {
 			return
 		}
 
+		if !reply.VoteGranted {
+			return
+		}
+
 		// check raft is still a Candidate and term not changed while it's requesting
 		if rf.contextChangedNoLock(term, Candidate) {
-			SysLog(rf.me, rf.currentTerm, DVote, "Lost context, abort requestVoteFromPeer in T%d", rf.currentTerm)
+			SysLog(rf.me, rf.currentTerm, DVote, "Lost context, abort requestVoteFromPeer for T%d, Role:%s", rf.currentTerm, getRole(rf.role))
 			return
 		}
 
@@ -147,14 +156,17 @@ func (rf *Raft) startElectionFromCandidate(term int) {
 		return
 	}
 
+	logLen := len(rf.log)
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
 
 		args := &RequestVoteArgs{
-			Term:        term,
-			CandidateId: rf.me,
+			Term:         term,
+			CandidateId:  rf.me,
+			LastLogIndex: logLen - 1,
+			LastLogTerm:  rf.log[logLen-1].Term,
 		}
 
 		go requestVoteFromPeer(i, args)
@@ -170,4 +182,17 @@ func (rf *Raft) resetElectionTimerNoLock() {
 
 func (rf *Raft) isElectionTimeoutNoLock() bool {
 	return time.Since(rf.electionStart) > rf.electionTimeout
+}
+
+func (rf *Raft) isLogMoreUpdateToDateNoLock(candidateTerm, candidateLogIndex int) bool {
+	logLen := len(rf.log)
+	lastLogIndex, lastLogTerm := logLen-1, rf.log[logLen-1].Term
+
+	SysLog(rf.me, rf.currentTerm, DVote, "Compare last log, Me: [%d]T%d, Candidate: [%d]T%d", lastLogIndex, lastLogTerm, candidateLogIndex, candidateTerm)
+
+	if lastLogTerm == candidateTerm {
+		return lastLogIndex > candidateLogIndex
+	} else {
+		return lastLogTerm > candidateTerm
+	}
 }

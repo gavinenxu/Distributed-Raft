@@ -44,8 +44,8 @@ type Raft struct {
 	log         []LogEntry // each entry contain command for state machine, and term when entry was received by leader (first index is 1, has a dummy head)
 
 	// volatile state on leader, reinitialize after election
-	nextIndex  []int // index of next log entry to send to that server, init = leader last log index + 1
-	matchIndex []int // index of highest log entry known to be replicated
+	nextIndex  []int // index of next log entry to send to that server, init = leader last log index + 1, which may not succeed on sync on the peer
+	matchIndex []int // index of highest log entry known to be replicated, which means it succeed on sync
 
 	// volatile state on all servers
 	commitIndex int // index of highest log entry known to be committed, init at 0
@@ -96,18 +96,18 @@ func NewRaft(peers []*rpc.ClientEnd, me int,
 		persister:   persister,
 		me:          me,
 		role:        Follower,
-		currentTerm: 0,
+		currentTerm: InitialTerm,
 		votedFor:    NotVoted,
 		log:         []LogEntry{},
 		nextIndex:   make([]int, len(peers)),
 		matchIndex:  make([]int, len(peers)),
-		commitIndex: 0,
-		lastApplied: 0,
+		commitIndex: InvalidLogIndex,
+		lastApplied: InvalidLogIndex,
 		applyCh:     applyCh,
 	}
 	rf.applyCond = sync.NewCond(&rf.mu)
 	// append a dummy log entry
-	rf.log = append(rf.log, LogEntry{})
+	rf.log = append(rf.log, LogEntry{Term: InvalidTerm})
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -128,44 +128,6 @@ func (rf *Raft) GetState() (int, bool) {
 	defer rf.mu.Unlock()
 
 	return rf.currentTerm, rf.role == Leader
-}
-
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-// before you've implemented snapshots, you should pass nil as the
-// second argument to persister.Save().
-// after you've implemented snapshots, pass the current snapshot
-// (or nil if there's not yet a snapshot).
-func (rf *Raft) persist() {
-	// Your code here (PartC).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := encoding.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftState := w.Bytes()
-	// rf.persister.Save(raftState, nil)
-}
-
-// restore previously persisted state.
-func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
-		return
-	}
-	// Your code here (PartC).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := encoding.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
 }
 
 // Snapshot the service says it has created a snapshot that has
@@ -194,7 +156,7 @@ func (rf *Raft) StartAppendCommandInLeader(command interface{}) (int, int, bool)
 	defer rf.mu.Unlock()
 
 	if rf.role != Leader {
-		return 0, 0, false
+		return InvalidLogIndex, InvalidTerm, false
 	}
 
 	rf.log = append(rf.log, LogEntry{
@@ -202,8 +164,9 @@ func (rf *Raft) StartAppendCommandInLeader(command interface{}) (int, int, bool)
 		CommandValid: true,
 		Term:         rf.currentTerm,
 	})
-
 	SysLog(rf.me, rf.currentTerm, DLeader, "Leader accept log: [%d]T%d", len(rf.log)-1, rf.currentTerm)
+
+	rf.persist()
 
 	return len(rf.log) - 1, rf.currentTerm, true
 }
@@ -236,11 +199,16 @@ func (rf *Raft) becomeFollowerNoLock(term int) {
 	SysLog(rf.me, rf.currentTerm, DInfo, "%s->follower, for T%d->T%d", getRole(rf.role), rf.currentTerm, term)
 
 	rf.role = Follower
+	shouldPersist := rf.currentTerm != term
 	// reset vote while update term
 	if rf.currentTerm < term {
 		rf.votedFor = NotVoted
 	}
 	rf.currentTerm = term
+
+	if shouldPersist {
+		rf.persist()
+	}
 	return
 }
 
@@ -256,6 +224,7 @@ func (rf *Raft) becomeCandidateNoLock() {
 	rf.role = Candidate
 	rf.votedFor = rf.me
 
+	rf.persist()
 	return
 }
 
@@ -272,7 +241,7 @@ func (rf *Raft) becomeLeaderNoLock() {
 	// volatile state
 	for i := 0; i < len(rf.peers); i++ {
 		rf.nextIndex[i] = len(rf.log) // First leader's nextIndex will be 1
-		rf.matchIndex[i] = 0
+		rf.matchIndex[i] = InvalidLogIndex
 	}
 
 	return

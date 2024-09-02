@@ -73,6 +73,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	reply.VoteGranted = true
 	rf.votedFor = args.CandidateId
+
+	rf.persist()
 	rf.resetElectionTimerNoLock()
 	SysLog(rf.me, rf.currentTerm, DVote, "-> S%d. Vote granted", rf.votedFor)
 }

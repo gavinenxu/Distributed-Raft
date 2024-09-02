@@ -16,7 +16,7 @@ type LogEntry struct {
 type AppendEntriesArgs struct {
 	Term         int
 	LeaderId     int
-	PrevLogIndex int
+	PrevLogIndex int // Get from leader's nextIndex
 	PrevLogTerm  int
 	Entries      []LogEntry
 	LeaderCommit int // leader's commit index
@@ -25,6 +25,9 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+
+	ConflictTerm  int // follower to notify leader the term it should be rollback to in leader's nextIndex
+	ConflictIndex int
 }
 
 // start a log entry and heart beat to all followers from leader at the moment a raft is promoted
@@ -87,12 +90,25 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.becomeFollowerNoLock(args.Term)
 
+	// ensure this follower won't start an election during this interval
+	defer rf.resetElectionTimerNoLock()
+
 	// check if log matched
 	if args.PrevLogIndex >= len(rf.log) {
+		// 1. in the case, leader's log is much longer than this follower's log
+		// then this candidate's term is valid, because it's far behind leader
+		reply.ConflictTerm = InvalidTerm
+		reply.ConflictIndex = len(rf.log)
+
 		SysLog(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log, Follower log is too short, Len:%d <= Prev:%d", args.LeaderId, len(rf.log), args.PrevLogIndex)
 		return
 	}
 	if args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
+		// 2. in the case, follower's log is longer, but with different term from leader's
+		// then this follower should align with leader's log, and ignore all the logs which beyond leader's
+		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+		reply.ConflictIndex = rf.getStartLogIndexForATerm(rf.log[args.PrevLogIndex].Term)
+
 		SysLog(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log, Follower log term not matched, [%d]T%d != T%d", args.LeaderId, args.PrevLogIndex, rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
 		return
 	}
@@ -102,6 +118,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// update follower's log
 	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
 	SysLog(rf.me, rf.currentTerm, DLog2, "Follower append logs: (%d, %d]", args.PrevLogIndex, len(rf.log))
+
+	rf.persist()
 
 	// leader asks to update commit index
 	if args.LeaderCommit > rf.commitIndex {
@@ -115,8 +133,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// to wake up the follower's apply msg signal, this is the moment peer to sync up apply message
 		rf.applyCond.Signal()
 	}
-
-	rf.resetElectionTimerNoLock()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -150,13 +166,28 @@ func (rf *Raft) startReplicateLogEntries(term int) bool {
 				return
 			}
 
-			// append log entry failed, then to find a possible prev log index which is not equal
-			i := rf.nextIndex[peer] - 1
-			peerTerm := rf.log[i].Term
-			for i > 0 && rf.log[i].Term == peerTerm {
-				i--
+			// append log entry failed, then to find a possible start index in next
+			prevNext := rf.nextIndex[peer]
+			if reply.ConflictTerm == InvalidTerm {
+				// 1. follower's log is far behind current leader's log, send follower's last log index
+				rf.nextIndex[peer] = reply.ConflictIndex
+			} else {
+				// 2. follower's log is larger but with different term
+				startTermIndex := rf.getStartLogIndexForATerm(reply.ConflictTerm)
+				if startTermIndex != InvalidLogIndex {
+					// leader find specific candidate's term index
+					rf.nextIndex[peer] = startTermIndex
+				} else {
+					// leader didn't find the candidate's term in log, get it from follower's conflict index
+					rf.nextIndex[peer] = reply.ConflictIndex
+				}
 			}
-			rf.nextIndex[peer] = i + 1
+
+			// avoid concurrent reply to move nextIndex forward
+			if rf.nextIndex[peer] > prevNext {
+				rf.nextIndex[peer] = prevNext
+			}
+
 			SysLog(rf.me, rf.currentTerm, DLog1, "Log not match in %d, Update next=%d", args.PrevLogIndex, rf.nextIndex[peer])
 			return
 		}
@@ -166,8 +197,8 @@ func (rf *Raft) startReplicateLogEntries(term int) bool {
 		rf.nextIndex[peer] = rf.matchIndex[peer] + 1
 
 		midLogIndex := rf.getMidMatchIndex()
-		// update commit index after most of the peers have passed the leader's commit index
-		if midLogIndex > rf.commitIndex {
+		// update commit index after most of the peers have passed the leader's commit index and apply log's term equals to current leader's term
+		if midLogIndex > rf.commitIndex && rf.log[midLogIndex].Term == rf.currentTerm {
 			SysLog(rf.me, rf.currentTerm, DApply, "Leader update the commit index %d -> %d", rf.commitIndex, midLogIndex)
 			rf.commitIndex = midLogIndex
 			// To signal leader apply msg ticker
@@ -191,6 +222,7 @@ func (rf *Raft) startReplicateLogEntries(term int) bool {
 			continue
 		}
 
+		// This is the place to use nextIndex, which is passed to follower to notify its log index
 		prevIndex := rf.nextIndex[i] - 1
 		prevTerm := rf.log[prevIndex].Term
 
@@ -212,6 +244,7 @@ func (rf *Raft) startReplicateLogEntries(term int) bool {
 	return true
 }
 
+// This is the place to use match index, which is going to calc leader's commit match index
 func (rf *Raft) getMidMatchIndex() int {
 	tmp := make([]int, len(rf.matchIndex))
 	copy(tmp, rf.matchIndex)
@@ -220,4 +253,15 @@ func (rf *Raft) getMidMatchIndex() int {
 
 	SysLog(rf.me, rf.currentTerm, DDebug, "Match index after sort: %v, mid[%d]=%d", tmp, mid, tmp[mid])
 	return tmp[mid]
+}
+
+func (rf *Raft) getStartLogIndexForATerm(term int) int {
+	for i, entry := range rf.log {
+		if entry.Term == term {
+			return i
+		} else if entry.Term > term {
+			break
+		}
+	}
+	return InvalidLogIndex
 }

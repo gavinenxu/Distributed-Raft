@@ -17,3 +17,9 @@ const (
 	electionTimeoutMax = 400 * time.Millisecond
 	replicateInterval  = 100 * time.Millisecond
 )
+
+const (
+	InvalidLogIndex = 0
+	InvalidTerm     = 0
+	InitialTerm     = InvalidTerm + 1
+)

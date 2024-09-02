@@ -1089,13 +1089,13 @@ func internalChurn(t *testing.T, unreliable bool) {
 	tr.end()
 }
 
-//func TestReliableChurnPartC(t *testing.T) {
-//	internalChurn(t, false)
-//}
-//
-//func TestUnreliableChurnPartC(t *testing.T) {
-//	internalChurn(t, true)
-//}
+func TestReliableChurnPartC(t *testing.T) {
+	internalChurn(t, false)
+}
+
+func TestUnreliableChurnPartC(t *testing.T) {
+	internalChurn(t, true)
+}
 
 const MAXLOGSIZE = 2000
 
@@ -1163,110 +1163,110 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 	tr.end()
 }
 
-//func TestSnapshotBasicPartD(t *testing.T) {
-//	snapcommon(t, "Test (PartD): snapshots basic", false, true, false)
-//}
-//
-//func TestSnapshotInstallPartD(t *testing.T) {
-//	snapcommon(t, "Test (PartD): install snapshots (disconnect)", true, true, false)
-//}
-//
-//func TestSnapshotInstallUnreliablePartD(t *testing.T) {
-//	snapcommon(t, "Test (PartD): install snapshots (disconnect+unreliable)",
-//		true, false, false)
-//}
-//
-//func TestSnapshotInstallCrashPartD(t *testing.T) {
-//	snapcommon(t, "Test (PartD): install snapshots (crash)", false, true, true)
-//}
-//
-//func TestSnapshotInstallUnCrashPartD(t *testing.T) {
-//	snapcommon(t, "Test (PartD): install snapshots (unreliable+crash)", false, false, true)
-//}
-//
-//// do the servers persist the snapshots, and
-//// restart using snapshot along with the
-//// tail of the log?
-//func TestSnapshotAllCrashPartD(t *testing.T) {
-//	servers := 3
-//	iters := 5
-//	tr := newTester(t, servers, false, true)
-//	defer tr.cleanup()
-//
-//	tr.begin("Test (PartD): crash and restart all servers")
-//
-//	tr.one(rand.Int(), servers, true)
-//
-//	for i := 0; i < iters; i++ {
-//		// perhaps enough to get a snapshot
-//		nn := (SnapShotInterval / 2) + (rand.Int() % SnapShotInterval)
-//		for i := 0; i < nn; i++ {
-//			tr.one(rand.Int(), servers, true)
-//		}
-//
-//		index1 := tr.one(rand.Int(), servers, true)
-//
-//		// crash all
-//		for i := 0; i < servers; i++ {
-//			tr.crash(i)
-//		}
-//
-//		// revive all
-//		for i := 0; i < servers; i++ {
-//			tr.startRaft(i, tr.applierSnap)
-//			tr.connect(i)
-//		}
-//
-//		index2 := tr.one(rand.Int(), servers, true)
-//		if index2 < index1+1 {
-//			t.Fatalf("index decreased from %v to %v", index1, index2)
-//		}
-//	}
-//	tr.end()
-//}
-//
-//// do servers correctly initialize their in-memory copy of the snapshot, making
-//// sure that future writes to persistent state don't lose state?
-//func TestSnapshotInitPartD(t *testing.T) {
-//	servers := 3
-//	tr := newTester(t, servers, false, true)
-//	defer tr.cleanup()
-//
-//	tr.begin("Test (PartD): snapshot initialization after crash")
-//	tr.one(rand.Int(), servers, true)
-//
-//	// enough ops to make a snapshot
-//	nn := SnapShotInterval + 1
-//	for i := 0; i < nn; i++ {
-//		tr.one(rand.Int(), servers, true)
-//	}
-//
-//	// crash all
-//	for i := 0; i < servers; i++ {
-//		tr.crash(i)
-//	}
-//
-//	// revive all
-//	for i := 0; i < servers; i++ {
-//		tr.startRaft(i, tr.applierSnap)
-//		tr.connect(i)
-//	}
-//
-//	// a single op, to get something to be written back to persistent storage.
-//	tr.one(rand.Int(), servers, true)
-//
-//	// crash all
-//	for i := 0; i < servers; i++ {
-//		tr.crash(i)
-//	}
-//
-//	// revive all
-//	for i := 0; i < servers; i++ {
-//		tr.startRaft(i, tr.applierSnap)
-//		tr.connect(i)
-//	}
-//
-//	// do another op to trigger potential bug
-//	tr.one(rand.Int(), servers, true)
-//	tr.end()
-//}
+func TestSnapshotBasicPartD(t *testing.T) {
+	snapcommon(t, "Test (PartD): snapshots basic", false, true, false)
+}
+
+func TestSnapshotInstallPartD(t *testing.T) {
+	snapcommon(t, "Test (PartD): install snapshots (disconnect)", true, true, false)
+}
+
+func TestSnapshotInstallUnreliablePartD(t *testing.T) {
+	snapcommon(t, "Test (PartD): install snapshots (disconnect+unreliable)",
+		true, false, false)
+}
+
+func TestSnapshotInstallCrashPartD(t *testing.T) {
+	snapcommon(t, "Test (PartD): install snapshots (crash)", false, true, true)
+}
+
+func TestSnapshotInstallUnCrashPartD(t *testing.T) {
+	snapcommon(t, "Test (PartD): install snapshots (unreliable+crash)", false, false, true)
+}
+
+// do the servers persist the snapshots, and
+// restart using snapshot along with the
+// tail of the log?
+func TestSnapshotAllCrashPartD(t *testing.T) {
+	servers := 3
+	iters := 5
+	tr := newTester(t, servers, false, true)
+	defer tr.cleanup()
+
+	tr.begin("Test (PartD): crash and restart all servers")
+
+	tr.one(rand.Int(), servers, true)
+
+	for i := 0; i < iters; i++ {
+		// perhaps enough to get a snapshot
+		nn := (SnapShotInterval / 2) + (rand.Int() % SnapShotInterval)
+		for i := 0; i < nn; i++ {
+			tr.one(rand.Int(), servers, true)
+		}
+
+		index1 := tr.one(rand.Int(), servers, true)
+
+		// crash all
+		for i := 0; i < servers; i++ {
+			tr.crash(i)
+		}
+
+		// revive all
+		for i := 0; i < servers; i++ {
+			tr.startRaft(i, tr.applierSnap)
+			tr.connect(i)
+		}
+
+		index2 := tr.one(rand.Int(), servers, true)
+		if index2 < index1+1 {
+			t.Fatalf("index decreased from %v to %v", index1, index2)
+		}
+	}
+	tr.end()
+}
+
+// do servers correctly initialize their in-memory copy of the snapshot, making
+// sure that future writes to persistent state don't lose state?
+func TestSnapshotInitPartD(t *testing.T) {
+	servers := 3
+	tr := newTester(t, servers, false, true)
+	defer tr.cleanup()
+
+	tr.begin("Test (PartD): snapshot initialization after crash")
+	tr.one(rand.Int(), servers, true)
+
+	// enough ops to make a snapshot
+	nn := SnapShotInterval + 1
+	for i := 0; i < nn; i++ {
+		tr.one(rand.Int(), servers, true)
+	}
+
+	// crash all
+	for i := 0; i < servers; i++ {
+		tr.crash(i)
+	}
+
+	// revive all
+	for i := 0; i < servers; i++ {
+		tr.startRaft(i, tr.applierSnap)
+		tr.connect(i)
+	}
+
+	// a single op, to get something to be written back to persistent storage.
+	tr.one(rand.Int(), servers, true)
+
+	// crash all
+	for i := 0; i < servers; i++ {
+		tr.crash(i)
+	}
+
+	// revive all
+	for i := 0; i < servers; i++ {
+		tr.startRaft(i, tr.applierSnap)
+		tr.connect(i)
+	}
+
+	// do another op to trigger potential bug
+	tr.one(rand.Int(), servers, true)
+	tr.end()
+}

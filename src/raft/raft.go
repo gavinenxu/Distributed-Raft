@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -250,4 +251,19 @@ func (rf *Raft) becomeLeaderNoLock() {
 // To check context if other raft send request to change current raft context, and it's approved by cur raft
 func (rf *Raft) contextChangedNoLock(term int, role Role) bool {
 	return rf.currentTerm != term || rf.role != role
+}
+
+func (rf *Raft) logTermString() string {
+	var termInfo string
+	prevTerm := rf.log[0].Term
+	prevStart := 0
+	for i := 1; i < len(rf.log); i++ {
+		if rf.log[i].Term != prevTerm {
+			termInfo += fmt.Sprintf(" [%d, %d]T%d", prevStart, i-1, prevTerm)
+			prevTerm = rf.log[i].Term
+			prevStart = i
+		}
+	}
+	termInfo += fmt.Sprintf(" [%d, %d]T%d", prevStart, len(rf.log)-1, prevTerm)
+	return termInfo
 }

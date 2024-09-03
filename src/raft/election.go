@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"math/rand"
 	"time"
 )
@@ -16,6 +17,14 @@ type RequestVoteArgs struct {
 type RequestVoteReply struct {
 	Term        int
 	VoteGranted bool
+}
+
+func (rva *RequestVoteArgs) String() string {
+	return fmt.Sprintf("Candidate-%d T%d, Last Log:[%d]T%d", rva.CandidateId, rva.Term, rva.LastLogIndex, rva.LastLogTerm)
+}
+
+func (rvr *RequestVoteReply) String() string {
+	return fmt.Sprintf("T%d, Vote Granted: %v", rvr.Term, rvr.VoteGranted)
 }
 
 // background thread from a raft server to start an election
@@ -42,9 +51,9 @@ func (rf *Raft) electionTicker() {
 // RequestVote RPC handler. Other candidate ask vote from current raft user,
 // raft user might change context based on input
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (PartA, PartB).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	SysLog(rf.me, rf.currentTerm, DDebug, "<- S%d, VoteAsked, args=%v", args.CandidateId, args.String())
 
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
@@ -123,9 +132,11 @@ func (rf *Raft) startElectionFromCandidate(term int) {
 		defer rf.mu.Unlock()
 
 		if !ok {
-			SysLog(rf.me, rf.currentTerm, DLog1, " -> S%d, requestVoteFromPeer Lost or crashed", peer)
+			SysLog(rf.me, rf.currentTerm, DLog1, "-> S%d, requestVoteFromPeer Lost or crashed", peer)
 			return
 		}
+
+		SysLog(rf.me, rf.currentTerm, DDebug, "-> S%d, AskVote reply: %v", peer, reply.String())
 
 		// reply user Term is larger, to become follower for current Candidate
 		if reply.Term > rf.currentTerm {
@@ -172,6 +183,7 @@ func (rf *Raft) startElectionFromCandidate(term int) {
 			LastLogTerm:  rf.log[logLen-1].Term,
 		}
 
+		SysLog(rf.me, rf.currentTerm, DDebug, "-> S%d, AskVote, args=%v", i, args.String())
 		go requestVoteFromPeer(i, args)
 	}
 }

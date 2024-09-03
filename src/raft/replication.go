@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"sort"
 	"time"
 )
@@ -28,6 +29,17 @@ type AppendEntriesReply struct {
 
 	ConflictTerm  int // follower to notify leader the term it should be rollback to in leader's nextIndex
 	ConflictIndex int
+}
+
+func (aea AppendEntriesArgs) String() string {
+	return fmt.Sprintf("Leader-%d, T%d, Prev Log:T%d, (%d, %d], CommitIdx: %d",
+		aea.LeaderId, aea.Term,
+		aea.PrevLogTerm, aea.PrevLogIndex, aea.PrevLogIndex+len(aea.Entries),
+		aea.LeaderCommit)
+}
+
+func (aea AppendEntriesReply) String() string {
+	return fmt.Sprintf("T%d, Success: %v, ConflictTerm: [%d]T%d", aea.Term, aea.Success, aea.ConflictIndex, aea.ConflictTerm)
 }
 
 // start a log entry and heart beat to all followers from leader at the moment a raft is promoted
@@ -79,7 +91,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	SysLog(rf.me, rf.currentTerm, DLog2, "<- S%d, Receive log, Prev=[%d]T%d, Len=%d", args.LeaderId, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries))
+	SysLog(rf.me, rf.currentTerm, DDebug, "<- S%d, Receive log, Args=%v", args.LeaderId, args.String())
 
 	reply.Term = rf.currentTerm
 	reply.Success = false
@@ -92,7 +104,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.becomeFollowerNoLock(args.Term)
 
 	// ensure this follower won't start an election during this interval
-	defer rf.resetElectionTimerNoLock()
+	defer func() {
+		rf.resetElectionTimerNoLock()
+		if !reply.Success {
+			SysLog(rf.me, rf.currentTerm, DLog2, "<- S%d, Follower Conflict: [%d]T%d", args.LeaderId, reply.ConflictIndex, reply.ConflictTerm)
+			SysLog(rf.me, rf.currentTerm, DDebug, "Follower log=%v", rf.logTermString())
+		}
+	}()
 
 	// check if log matched
 	if args.PrevLogIndex >= len(rf.log) {
@@ -153,9 +171,11 @@ func (rf *Raft) startReplicateLogEntries(term int) bool {
 
 		// To avoid race condition for return 'ok' while taking another PRC call
 		if !ok {
-			SysLog(rf.me, rf.currentTerm, DLog1, " -> S%d, sendLogEntriesToPeer Lost or crashed", peer)
+			SysLog(rf.me, rf.currentTerm, DLog1, "-> S%d, sendLogEntriesToPeer Lost or crashed", peer)
 			return
 		}
+
+		SysLog(rf.me, rf.currentTerm, DDebug, "-> S%d, Append, Reply=%v", peer, reply.String())
 
 		if rf.contextChangedNoLock(term, Leader) {
 			SysLog(rf.me, rf.currentTerm, DVote, "Lost context, abort sendLogEntriesToPeer in T%d", rf.currentTerm)
@@ -191,7 +211,10 @@ func (rf *Raft) startReplicateLogEntries(term int) bool {
 				rf.nextIndex[peer] = prevNext
 			}
 
-			SysLog(rf.me, rf.currentTerm, DLog1, "Log not match in %d, Update next=%d", args.PrevLogIndex, rf.nextIndex[peer])
+			SysLog(rf.me, rf.currentTerm, DLog1, "-> S%d, Log not match Prev=[%d]T%d, Update Next Prev=[%d]%Td", peer, args.PrevLogIndex, args.PrevLogTerm, rf.nextIndex[peer]-1, rf.log[rf.nextIndex[peer]-1].Term)
+
+			SysLog(rf.me, rf.currentTerm, DDebug, "Leader log=%v", rf.logTermString())
+
 			return
 		}
 
@@ -238,7 +261,7 @@ func (rf *Raft) startReplicateLogEntries(term int) bool {
 			LeaderCommit: rf.commitIndex,
 		}
 
-		SysLog(rf.me, rf.currentTerm, DDebug, "-> S%d, Send log, Prev=[%d]T%d, Len=%d", i, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries))
+		SysLog(rf.me, rf.currentTerm, DDebug, "-> S%d, Send log: %v", i, args.String())
 
 		go sendLogEntriesToPeer(i, args)
 	}

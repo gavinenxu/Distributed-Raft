@@ -31,9 +31,10 @@ type AppendEntriesReply struct {
 }
 
 // start a log entry and heart beat to all followers from leader at the moment a raft is promoted
+// Should pass term while raft is being selected as leader, which should be the same for the whole period of sending log entries
 func (rf *Raft) replicateTicker(term int) {
 	for !rf.killed() {
-		if ok := rf.startReplicateLogEntries(rf.currentTerm); !ok {
+		if ok := rf.startReplicateLogEntries(term); !ok {
 			return
 		}
 
@@ -117,7 +118,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// update follower's log
 	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
-	SysLog(rf.me, rf.currentTerm, DLog2, "Follower append logs: (%d, %d]", args.PrevLogIndex, len(rf.log))
+	SysLog(rf.me, rf.currentTerm, DLog2, "Follower append logs: [%d, %d]", args.PrevLogIndex+1, len(rf.log))
 
 	rf.persist()
 
@@ -146,13 +147,15 @@ func (rf *Raft) startReplicateLogEntries(term int) bool {
 	sendLogEntriesToPeer := func(peer int, args *AppendEntriesArgs) {
 		reply := &AppendEntriesReply{}
 		ok := rf.sendAppendEntries(peer, args, reply)
-		if !ok {
-			SysLog(rf.me, rf.currentTerm, DLog1, " -> S%d, Lost or crashed", peer)
-			return
-		}
 
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
+
+		// To avoid race condition for return 'ok' while taking another PRC call
+		if !ok {
+			SysLog(rf.me, rf.currentTerm, DLog1, " -> S%d, sendLogEntriesToPeer Lost or crashed", peer)
+			return
+		}
 
 		if rf.contextChangedNoLock(term, Leader) {
 			SysLog(rf.me, rf.currentTerm, DVote, "Lost context, abort sendLogEntriesToPeer in T%d", rf.currentTerm)
@@ -231,7 +234,6 @@ func (rf *Raft) startReplicateLogEntries(term int) bool {
 			LeaderId:     rf.me,
 			PrevLogIndex: prevIndex,
 			PrevLogTerm:  prevTerm,
-			//Entries:      rf.log[prevIndex+1:],
 			Entries:      append([]LogEntry(nil), rf.log[prevIndex+1:]...), // To copy the entries, otherwise it pass the reference to the inner thread, whose data is in critical section
 			LeaderCommit: rf.commitIndex,
 		}

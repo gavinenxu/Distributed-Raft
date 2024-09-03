@@ -15,7 +15,7 @@ const (
 const (
 	electionTimeoutMin = 250 * time.Millisecond
 	electionTimeoutMax = 400 * time.Millisecond
-	replicateInterval  = 100 * time.Millisecond
+	replicateInterval  = 70 * time.Millisecond
 )
 
 const (

@@ -234,7 +234,7 @@ func (rf *Raft) becomeLeaderNoLock() {
 		return
 	}
 
-	SysLog(rf.me, rf.currentTerm, DInfo, "Leader, for T%d", rf.currentTerm+1)
+	SysLog(rf.me, rf.currentTerm, DInfo, "Leader, for T%d", rf.currentTerm)
 
 	rf.role = Leader
 

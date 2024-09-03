@@ -5,8 +5,7 @@ import (
 	"time"
 )
 
-// RequestVote Invoked by candidate to gather votes
-
+// RequestVoteArgs Invoked by candidate to gather votes
 type RequestVoteArgs struct {
 	Term         int
 	CandidateId  int
@@ -15,7 +14,6 @@ type RequestVoteArgs struct {
 }
 
 type RequestVoteReply struct {
-	// Your data here (PartA).
 	Term        int
 	VoteGranted bool
 }
@@ -119,12 +117,15 @@ func (rf *Raft) startElectionFromCandidate(term int) {
 	// To check if Candidate could get a vote from its peer
 	requestVoteFromPeer := func(peer int, args *RequestVoteArgs) {
 		reply := &RequestVoteReply{}
-		if ok := rf.sendRequestVote(peer, args, reply); !ok {
-			return
-		}
+		ok := rf.sendRequestVote(peer, args, reply)
 
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
+
+		if !ok {
+			SysLog(rf.me, rf.currentTerm, DLog1, " -> S%d, requestVoteFromPeer Lost or crashed", peer)
+			return
+		}
 
 		// reply user Term is larger, to become follower for current Candidate
 		if reply.Term > rf.currentTerm {

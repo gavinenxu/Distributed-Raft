@@ -59,5 +59,5 @@ func (rf *Raft) readPersist(data []byte) {
 }
 
 func (rf *Raft) persistStateString() string {
-	return fmt.Sprintf("T%d, Voted for: %d, log length: %d", rf.currentTerm, rf.votedFor, len(rf.log))
+	return fmt.Sprintf("T%d, Voted for: S%d, log length: %d", rf.currentTerm, rf.votedFor, len(rf.log))
 }

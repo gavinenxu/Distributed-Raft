@@ -6,10 +6,10 @@ package raft
 
 import (
 	"bytes"
-	"course/encoding"
-	"course/rpc"
 	"log"
 	"math/rand"
+	"raft-kv/encoding"
+	"raft-kv/rpc"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -61,6 +61,7 @@ type tester struct {
 
 var nCpuOnce sync.Once
 
+// In application layer to set up net and raft servers, then connect raft servers
 func newTester(t *testing.T, n int, unreliable bool, snapshot bool) *tester {
 	nCpuOnce.Do(func() {
 		if runtime.NumCPU() < 2 {
@@ -631,7 +632,7 @@ func (tr *tester) end() {
 		tr.mu.Unlock()
 
 		fmt.Printf("  ... Passed --")
-		fmt.Printf("  %4.1f  %d %4d %7d %4d\n", t, nPeers, nRpc, nBytes, nCmds)
+		fmt.Printf("  total time: %4.1f,  peers: %d, rpc sent: %d, total bytes sent: %d, total raft agreements: %d\n", t, nPeers, nRpc, nBytes, nCmds)
 	}
 }
 

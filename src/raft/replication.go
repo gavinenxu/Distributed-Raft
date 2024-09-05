@@ -71,7 +71,7 @@ func (rf *Raft) applyTicker() {
 		rf.mu.Unlock()
 
 		for i, entry := range logEntries {
-			// send to follower to update the log entries
+			// send back to upper layer (the user of raft servers), then update state machine
 			rf.applyCh <- ApplyMessage{
 				CommandValid: entry.CommandValid,
 				Command:      entry.Command,

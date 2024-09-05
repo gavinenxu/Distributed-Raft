@@ -2,8 +2,8 @@ package raft
 
 import (
 	"bytes"
-	"course/encoding"
 	"fmt"
+	"raft-kv/encoding"
 )
 
 // save Raft's persistent state to stable storage,

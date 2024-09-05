@@ -21,6 +21,30 @@ import (
 // (much more than the paper's range of timeouts).
 const RaftElectionTimeout = 1000 * time.Millisecond
 
+func TestCheckOneLeader(t *testing.T) {
+	servers := 3
+	tr := newTester(t, servers, false, false)
+	defer tr.cleanup()
+
+	tr.begin("Test: raft functions")
+
+	leader1 := tr.checkOneLeader()
+	if leader1 == -1 {
+		t.Fatalf("Test: raft election failed, leader1=-1")
+	}
+
+	tr.disconnect(leader1)
+	leader2 := tr.checkOneLeader()
+	if leader2 == -1 {
+		t.Fatalf("Test: raft election failed, leader2=-1")
+	}
+	if leader1 == leader2 {
+		t.Fatalf("Test: raft election failed, leader2=leader1 after network abort")
+	}
+
+	tr.end()
+}
+
 func TestInitialElectionPartA(t *testing.T) {
 	servers := 3
 	tr := newTester(t, servers, false, false)

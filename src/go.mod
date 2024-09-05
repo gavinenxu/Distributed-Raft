@@ -1,4 +1,4 @@
-module course
+module raft-kv
 
 go 1.15
 

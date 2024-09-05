@@ -23,8 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	//	"course/encoding"
-	"course/rpc"
+	"raft-kv/rpc"
 )
 
 // Raft A Go object implementing a single Raft peer.
@@ -152,6 +151,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // if it's ever committed. the second return value is the current
 // term. the third return value is true if this server believes it is
 // the leader.
+// return [commandIndex, currentTerm, isLeader]
 func (rf *Raft) StartAppendCommandInLeader(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()

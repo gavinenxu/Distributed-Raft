@@ -51,7 +51,7 @@ type Raft struct {
 	commitIndex int // index of highest log entry known to be committed, init at 0
 	lastApplied int // index of highest log entry applied to state machine, init at 0
 	applyCond   *sync.Cond
-	applyCh     chan ApplyMessage
+	applyCh     chan ApplyMessage // channel to communicate with upper layer, return the log append message
 
 	electionStart   time.Time
 	electionTimeout time.Duration // random

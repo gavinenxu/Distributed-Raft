@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"raft-kv/encoding"
 	"raft-kv/raft"
 	"raft-kv/rpc"
 	"sync"
@@ -27,12 +28,17 @@ type Server struct {
 	notifyChs    map[int]chan *OperationReply
 	stateMachine *ClerkStateMachine
 	lastApplied  int
+
+	commandMap map[int64]*LastReply // [clientId, seqId] to check the duplicate log entry
 }
 
 type Operation struct {
 	Key    string
 	Value  string
 	OpType OperationType
+
+	ClientId int64
+	SeqId    int64
 }
 
 type OperationReply struct {
@@ -40,8 +46,13 @@ type OperationReply struct {
 	Err   error
 }
 
+type LastReply struct {
+	seqId int64
+	reply *OperationReply
+}
+
 func NewServer(clientEnds []*rpc.ClientEnd, me int, persister *raft.Persister, maxRaftState int) *Server {
-	//encoding.Register(Operation{})
+	encoding.Register(Operation{})
 
 	server := &Server{
 		mu:           sync.Mutex{},
@@ -55,10 +66,13 @@ func NewServer(clientEnds []*rpc.ClientEnd, me int, persister *raft.Persister, m
 	server.applyCh = make(chan raft.ApplyMessage)
 	server.rf = raft.NewRaft(clientEnds, me, persister, server.applyCh)
 
+	go server.applyTicker()
+
 	return server
 }
 
-func (server *Server) Get(args *GetArgs, reply *GetReply) {
+// Get  log entry, then get result from notifyChannel through state machine
+func (server *Server) Get(args GetArgs, reply *GetReply) {
 	// apply logs in raft first
 	commandIndex, _, isLeader := server.rf.StartAppendCommandInLeader(
 		Operation{
@@ -91,12 +105,24 @@ func (server *Server) Get(args *GetArgs, reply *GetReply) {
 
 }
 
-func (server *Server) Put(args *PutArgs, reply *PutReply) {
+// Put append log entry, then get result from notifyChannel through state machine
+func (server *Server) Put(args PutArgs, reply *PutReply) {
+	server.mu.Lock()
+	if server.isDuplicateOp(args.ClientId, args.SeqId) {
+		last, _ := server.commandMap[args.ClientId]
+		reply.Err = last.reply.Err
+		server.mu.Unlock()
+		return
+	}
+	server.mu.Unlock()
+
 	commandIndex, _, isLeader := server.rf.StartAppendCommandInLeader(
 		Operation{
-			Key:    args.Key,
-			Value:  args.Value,
-			OpType: OpPut,
+			Key:      args.Key,
+			Value:    args.Value,
+			OpType:   OpPut,
+			ClientId: args.ClientId,
+			SeqId:    args.SeqId,
 		})
 
 	if !isLeader {
@@ -122,12 +148,24 @@ func (server *Server) Put(args *PutArgs, reply *PutReply) {
 	}()
 }
 
-func (server *Server) Append(args *PutArgs, reply *PutReply) {
+// Append log entry, then get result from notifyChannel through state machine
+func (server *Server) Append(args PutArgs, reply *PutReply) {
+	server.mu.Lock()
+	if server.isDuplicateOp(args.ClientId, args.SeqId) {
+		last, _ := server.commandMap[args.ClientId]
+		reply.Err = last.reply.Err
+		server.mu.Unlock()
+		return
+	}
+	server.mu.Unlock()
+
 	commandIndex, _, isLeader := server.rf.StartAppendCommandInLeader(
 		Operation{
-			Key:    args.Key,
-			Value:  args.Value,
-			OpType: OpAppend,
+			Key:      args.Key,
+			Value:    args.Value,
+			OpType:   OpAppend,
+			ClientId: args.ClientId,
+			SeqId:    args.SeqId,
 		})
 
 	if !isLeader {
@@ -199,9 +237,27 @@ func (server *Server) applyTicker() {
 			case OpGet:
 				opReply.Value, opReply.Err = server.stateMachine.Get(op.Key)
 			case OpPut:
-				opReply.Err = server.stateMachine.Put(op.Key, op.Value)
+				if server.isDuplicateOp(op.ClientId, op.SeqId) {
+					opReply = server.commandMap[op.ClientId].reply
+				} else {
+					opReply.Err = server.stateMachine.Put(op.Key, op.Value)
+					// cache command
+					server.commandMap[op.ClientId] = &LastReply{
+						seqId: op.SeqId,
+						reply: opReply,
+					}
+				}
 			case OpAppend:
-				opReply.Err = server.stateMachine.Append(op.Key, op.Value)
+				if server.isDuplicateOp(op.ClientId, op.SeqId) {
+					opReply = server.commandMap[op.ClientId].reply
+				} else {
+					opReply.Err = server.stateMachine.Append(op.Key, op.Value)
+					// cache command
+					server.commandMap[op.ClientId] = &LastReply{
+						seqId: op.SeqId,
+						reply: opReply,
+					}
+				}
 			default:
 				panic("unknown operation type")
 			}
@@ -215,4 +271,9 @@ func (server *Server) applyTicker() {
 			server.mu.Unlock()
 		}
 	}
+}
+
+func (server *Server) isDuplicateOp(clientId, seqId int64) bool {
+	reply, ok := server.commandMap[clientId]
+	return ok && reply.seqId <= seqId
 }

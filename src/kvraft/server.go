@@ -29,7 +29,7 @@ type Server struct {
 	stateMachine *ClerkStateMachine
 	lastApplied  int
 
-	commandMap map[int64]*LastReply // [clientId, seqId] to check the duplicate log entry
+	commandMap map[int64]*LastReply // clientId -> seqId to check the duplicate log entry
 }
 
 type Operation struct {

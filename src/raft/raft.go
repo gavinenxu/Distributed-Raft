@@ -18,7 +18,6 @@ package raft
 //
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,8 +39,9 @@ type Raft struct {
 	role Role
 	// persist state on all servers
 	currentTerm int
-	votedFor    int        // -1 means vote for none
-	log         []LogEntry // each entry contain command for state machine, and term when entry was received by leader (first index is 1, has a dummy head)
+	votedFor    int // -1 means vote for none
+	//log         []LogEntry // each entry contain command for state machine, and term when entry was received by leader (first index is 1, has a dummy head)
+	log *RaftLog
 
 	// volatile state on leader, reinitialize after election
 	nextIndex  []int // index of next log entry to send to that server, init = leader last log index + 1, which may not succeed on sync on the peer
@@ -96,9 +96,8 @@ func NewRaft(peers []*rpc.ClientEnd, me int,
 		persister:   persister,
 		me:          me,
 		role:        Follower,
-		currentTerm: InitialTerm,
+		currentTerm: InvalidTerm + 1,
 		votedFor:    NotVoted,
-		log:         []LogEntry{},
 		nextIndex:   make([]int, len(peers)),
 		matchIndex:  make([]int, len(peers)),
 		commitIndex: InvalidLogIndex,
@@ -107,7 +106,7 @@ func NewRaft(peers []*rpc.ClientEnd, me int,
 	}
 	rf.applyCond = sync.NewCond(&rf.mu)
 	// append a dummy log entry
-	rf.log = append(rf.log, LogEntry{Term: InvalidTerm})
+	rf.log = NewLog(InvalidLogIndex, InvalidTerm, []byte{}, []LogEntry{})
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -135,8 +134,11 @@ func (rf *Raft) GetState() (int, bool) {
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (PartD).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
+	rf.log.SnapshotFromIndex(index, snapshot)
+	rf.persist()
 }
 
 // StartAppendCommandInLeader the service using Raft (e.g. a k/v server) wants to start
@@ -160,16 +162,16 @@ func (rf *Raft) StartAppendCommandInLeader(command interface{}) (int, int, bool)
 		return InvalidLogIndex, InvalidTerm, false
 	}
 
-	rf.log = append(rf.log, LogEntry{
+	rf.log.Append(LogEntry{
 		Command:      command,
 		CommandValid: true,
 		Term:         rf.currentTerm,
 	})
-	SysLog(rf.me, rf.currentTerm, DLeader, "Leader accept log: [%d]T%d", len(rf.log)-1, rf.currentTerm)
+	SysLog(rf.me, rf.currentTerm, DLeader, "Leader accept log: [%d]T%d", rf.log.LastIndex(), rf.currentTerm)
 
 	rf.persist()
 
-	return len(rf.log) - 1, rf.currentTerm, true
+	return rf.log.LastIndex(), rf.currentTerm, true
 }
 
 // Kill the tester doesn't halt goroutines created by Raft after each test,
@@ -241,7 +243,7 @@ func (rf *Raft) becomeLeaderNoLock() {
 
 	// volatile state
 	for i := 0; i < len(rf.peers); i++ {
-		rf.nextIndex[i] = len(rf.log) // First leader's nextIndex will be 1
+		rf.nextIndex[i] = rf.log.LastIndex() + 1 // First leader's nextIndex will be 1
 		rf.matchIndex[i] = InvalidLogIndex
 	}
 
@@ -251,19 +253,4 @@ func (rf *Raft) becomeLeaderNoLock() {
 // To check context if other raft send request to change current raft context, and it's approved by cur raft
 func (rf *Raft) contextChangedNoLock(term int, role Role) bool {
 	return rf.currentTerm != term || rf.role != role
-}
-
-func (rf *Raft) logTermString() string {
-	var termInfo string
-	prevTerm := rf.log[0].Term
-	prevStart := 0
-	for i := 1; i < len(rf.log); i++ {
-		if rf.log[i].Term != prevTerm {
-			termInfo += fmt.Sprintf(" [%d, %d]T%d", prevStart, i-1, prevTerm)
-			prevTerm = rf.log[i].Term
-			prevStart = i
-		}
-	}
-	termInfo += fmt.Sprintf(" [%d, %d]T%d", prevStart, len(rf.log)-1, prevTerm)
-	return termInfo
 }

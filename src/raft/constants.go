@@ -21,5 +21,4 @@ const (
 const (
 	InvalidLogIndex = 0
 	InvalidTerm     = 0
-	InitialTerm     = InvalidTerm + 1
 )

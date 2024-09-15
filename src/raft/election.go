@@ -170,7 +170,6 @@ func (rf *Raft) startElectionFromCandidate(term int) {
 		return
 	}
 
-	logLen := len(rf.log)
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -179,8 +178,8 @@ func (rf *Raft) startElectionFromCandidate(term int) {
 		args := &RequestVoteArgs{
 			Term:         term,
 			CandidateId:  rf.me,
-			LastLogIndex: logLen - 1,
-			LastLogTerm:  rf.log[logLen-1].Term,
+			LastLogIndex: rf.log.LastIndex(),
+			LastLogTerm:  rf.log.LastTerm(),
 		}
 
 		SysLog(rf.me, rf.currentTerm, DDebug, "-> S%d, AskVote, args=%v", i, args.String())
@@ -200,8 +199,7 @@ func (rf *Raft) isElectionTimeoutNoLock() bool {
 }
 
 func (rf *Raft) isLogMoreUpdateToDateNoLock(candidateTerm, candidateLogIndex int) bool {
-	logLen := len(rf.log)
-	lastLogIndex, lastLogTerm := logLen-1, rf.log[logLen-1].Term
+	lastLogIndex, lastLogTerm := rf.log.LastIndex(), rf.log.LastTerm()
 
 	SysLog(rf.me, rf.currentTerm, DVote, "Compare last log, Me: [%d]T%d, Candidate: [%d]T%d", lastLogIndex, lastLogTerm, candidateLogIndex, candidateTerm)
 

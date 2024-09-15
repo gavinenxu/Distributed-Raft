@@ -18,7 +18,7 @@ func (rf *Raft) persist() {
 	enc := encoding.NewEncoder(writer)
 	_ = enc.Encode(rf.currentTerm)
 	_ = enc.Encode(rf.votedFor)
-	_ = enc.Encode(rf.log)
+	_ = rf.log.Encode(enc)
 	raftState := writer.Bytes()
 	rf.persister.Save(raftState, nil)
 
@@ -35,7 +35,6 @@ func (rf *Raft) readPersist(data []byte) {
 	dec := encoding.NewDecoder(reader)
 	var currentTerm int
 	var votedFor int
-	var log []LogEntry
 
 	if err := dec.Decode(&currentTerm); err != nil {
 		SysLog(rf.me, rf.currentTerm, DError, "failed to read current term error: %v", err)
@@ -49,15 +48,14 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 	rf.votedFor = votedFor
 
-	if err := dec.Decode(&log); err != nil {
+	if err := rf.log.Decode(dec); err != nil {
 		SysLog(rf.me, rf.currentTerm, DError, "failed to read log error: %v", err)
 		return
 	}
-	rf.log = log
 
 	SysLog(rf.me, rf.currentTerm, DPersist, "Read Persist: %v", rf.persistStateString())
 }
 
 func (rf *Raft) persistStateString() string {
-	return fmt.Sprintf("T%d, Voted for: S%d, log length: %d", rf.currentTerm, rf.votedFor, len(rf.log))
+	return fmt.Sprintf("T%d, Voted for: S%d, log length: %d", rf.currentTerm, rf.votedFor, rf.log.Size())
 }

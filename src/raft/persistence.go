@@ -18,9 +18,9 @@ func (rf *Raft) persist() {
 	enc := encoding.NewEncoder(writer)
 	_ = enc.Encode(rf.currentTerm)
 	_ = enc.Encode(rf.votedFor)
-	_ = rf.log.Encode(enc)
+	_ = rf.log.encode(enc)
 	raftState := writer.Bytes()
-	rf.persister.Save(raftState, nil)
+	rf.persister.Save(raftState, rf.log.readSnapshot())
 
 	SysLog(rf.me, rf.currentTerm, DPersist, "Write Persist: %v", rf.persistStateString())
 }
@@ -48,14 +48,21 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 	rf.votedFor = votedFor
 
-	if err := rf.log.Decode(dec); err != nil {
+	if err := rf.log.decode(dec); err != nil {
 		SysLog(rf.me, rf.currentTerm, DError, "failed to read log error: %v", err)
 		return
 	}
-
+	rf.log.restoreSnapshot(rf.persister.ReadSnapshot())
 	SysLog(rf.me, rf.currentTerm, DPersist, "Read Persist: %v", rf.persistStateString())
+
+	// update application layer index
+	if rf.commitIndex < rf.log.snapLastIndex {
+		rf.commitIndex = rf.log.snapLastIndex
+		rf.lastApplied = rf.commitIndex
+	}
+
 }
 
 func (rf *Raft) persistStateString() string {
-	return fmt.Sprintf("T%d, Voted for: S%d, log length: %d", rf.currentTerm, rf.votedFor, rf.log.Size())
+	return fmt.Sprintf("T%d, Voted for: S%d, log length: %d", rf.currentTerm, rf.votedFor, rf.log.size())
 }

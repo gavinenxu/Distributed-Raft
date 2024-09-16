@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,13 +49,15 @@ type Raft struct {
 	matchIndex []int // index of highest log entry known to be replicated, which means it succeed on sync
 
 	// volatile state on all servers
-	commitIndex int // index of highest log entry known to be committed, init at 0
-	lastApplied int // index of highest log entry applied to state machine, init at 0
+	commitIndex int // majority index of log entry known to be committed in raft log, init at 0
+	lastApplied int // index of highest log entry applied to state machine from application layer, init at 0, usually lastApplied <= commitIndex
 	applyCond   *sync.Cond
 	applyCh     chan ApplyMessage // channel to communicate with upper layer, return the log append message
 
 	electionStart   time.Time
 	electionTimeout time.Duration // random
+
+	snapshotApply bool
 }
 
 // as each Raft peer becomes aware that successive log entries are
@@ -79,6 +82,10 @@ type ApplyMessage struct {
 	SnapshotIndex int
 }
 
+func (am *ApplyMessage) String() string {
+	return fmt.Sprintf("Command Valid %v, Command %v, CommandIndex %v, SnapshotIndex %v, SnapshotTerm %v, SnapshotValid %v", am.CommandValid, am.Command, am.CommandIndex, am.SnapshotIndex, am.SnapshotTerm, am.SnapshotValid)
+}
+
 // NewRaft the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -91,22 +98,23 @@ type ApplyMessage struct {
 func NewRaft(peers []*rpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMessage) *Raft {
 	rf := &Raft{
-		mu:          sync.Mutex{},
-		peers:       peers,
-		persister:   persister,
-		me:          me,
-		role:        Follower,
-		currentTerm: InvalidTerm + 1,
-		votedFor:    NotVoted,
-		nextIndex:   make([]int, len(peers)),
-		matchIndex:  make([]int, len(peers)),
-		commitIndex: InvalidLogIndex,
-		lastApplied: InvalidLogIndex,
-		applyCh:     applyCh,
+		mu:            sync.Mutex{},
+		peers:         peers,
+		persister:     persister,
+		me:            me,
+		role:          Follower,
+		currentTerm:   InvalidTerm + 1,
+		votedFor:      NotVoted,
+		nextIndex:     make([]int, len(peers)),
+		matchIndex:    make([]int, len(peers)),
+		commitIndex:   InvalidLogIndex,
+		lastApplied:   InvalidLogIndex,
+		applyCh:       applyCh,
+		snapshotApply: false,
 	}
 	rf.applyCond = sync.NewCond(&rf.mu)
 	// append a dummy log entry
-	rf.log = NewLog(InvalidLogIndex, InvalidTerm, []byte{}, []LogEntry{})
+	rf.log = NewRaftLog(InvalidLogIndex, InvalidTerm, nil, nil)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -127,18 +135,6 @@ func (rf *Raft) GetState() (int, bool) {
 	defer rf.mu.Unlock()
 
 	return rf.currentTerm, rf.role == Leader
-}
-
-// Snapshot the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	rf.log.SnapshotFromIndex(index, snapshot)
-	rf.persist()
 }
 
 // StartAppendCommandInLeader the service using Raft (e.g. a k/v server) wants to start
@@ -162,16 +158,16 @@ func (rf *Raft) StartAppendCommandInLeader(command interface{}) (int, int, bool)
 		return InvalidLogIndex, InvalidTerm, false
 	}
 
-	rf.log.Append(LogEntry{
+	rf.log.append(LogEntry{
 		Command:      command,
 		CommandValid: true,
 		Term:         rf.currentTerm,
 	})
-	SysLog(rf.me, rf.currentTerm, DLeader, "Leader accept log: [%d]T%d", rf.log.LastIndex(), rf.currentTerm)
+	SysLog(rf.me, rf.currentTerm, DLeader, "Leader accept log: [%d]T%d", rf.log.lastIndex(), rf.currentTerm)
 
 	rf.persist()
 
-	return rf.log.LastIndex(), rf.currentTerm, true
+	return rf.log.lastIndex(), rf.currentTerm, true
 }
 
 // Kill the tester doesn't halt goroutines created by Raft after each test,
@@ -243,7 +239,7 @@ func (rf *Raft) becomeLeaderNoLock() {
 
 	// volatile state
 	for i := 0; i < len(rf.peers); i++ {
-		rf.nextIndex[i] = rf.log.LastIndex() + 1 // First leader's nextIndex will be 1
+		rf.nextIndex[i] = rf.log.lastIndex() + 1 // First leader's nextIndex will be 1
 		rf.matchIndex[i] = InvalidLogIndex
 	}
 

@@ -243,6 +243,7 @@ func (tr *tester) applierSnap(i int, applyCh chan ApplyMessage) {
 			tr.lastApplied[i] = m.CommandIndex
 			tr.mu.Unlock()
 
+			// install snapshot each internal
 			if (m.CommandIndex+1)%SnapShotInterval == 0 {
 				w := new(bytes.Buffer)
 				e := encoding.NewEncoder(w)

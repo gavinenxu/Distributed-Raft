@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"raft-kv/encoding"
 	"raft-kv/raft"
 	"raft-kv/rpc"
@@ -66,6 +67,8 @@ func NewKVServer(clientEnds []*rpc.ClientEnd, me int, persister *raft.Persister,
 	}
 	kv.applyCh = make(chan raft.ApplyMessage)
 	kv.rf = raft.NewRaft(clientEnds, me, persister, kv.applyCh)
+
+	kv.readSnapshot(persister.ReadSnapshot())
 
 	go kv.applyTicker()
 
@@ -175,57 +178,67 @@ func (kv *KVServer) applyTicker() {
 	for !kv.Killed() {
 		select {
 		case msg := <-kv.applyCh:
-			if !msg.CommandValid {
-				break
-			}
-
-			kv.mu.Lock()
-
-			// message has been served
-			if msg.CommandIndex <= kv.lastApplied {
-				break
-			}
-			kv.lastApplied = msg.CommandIndex
-
-			op := msg.Command.(Operation)
-			var opReply *OperationReply
-
-			switch op.OpType {
-			case OpGet:
-				opReply.Value, opReply.Err = kv.stateMachine.Get(op.Key)
-			case OpPut:
-				if kv.isDuplicateOp(op.ClientId, op.SeqId) {
-					opReply = kv.duplicateTable[op.ClientId].reply
-				} else {
-					opReply.Err = kv.stateMachine.Put(op.Key, op.Value)
-					// cache command
-					kv.duplicateTable[op.ClientId] = LastOperationInfo{
-						seqId: op.SeqId,
-						reply: opReply,
-					}
+			if msg.SnapshotValid {
+				// read from snapshot
+				kv.mu.Lock()
+				kv.readSnapshot(msg.Snapshot)
+				kv.lastApplied = msg.SnapshotIndex
+				kv.mu.Unlock()
+			} else if msg.CommandValid {
+				// read from append log command
+				kv.mu.Lock()
+				// message has been served
+				if msg.CommandIndex <= kv.lastApplied {
+					break
 				}
-			case OpAppend:
-				if kv.isDuplicateOp(op.ClientId, op.SeqId) {
-					opReply = kv.duplicateTable[op.ClientId].reply
-				} else {
-					opReply.Err = kv.stateMachine.Append(op.Key, op.Value)
-					// cache command
-					kv.duplicateTable[op.ClientId] = LastOperationInfo{
-						seqId: op.SeqId,
-						reply: opReply,
+				kv.lastApplied = msg.CommandIndex
+
+				op := msg.Command.(Operation)
+				var opReply *OperationReply
+
+				switch op.OpType {
+				case OpGet:
+					opReply.Value, opReply.Err = kv.stateMachine.Get(op.Key)
+				case OpPut:
+					if kv.isDuplicateOp(op.ClientId, op.SeqId) {
+						opReply = kv.duplicateTable[op.ClientId].reply
+					} else {
+						opReply.Err = kv.stateMachine.Put(op.Key, op.Value)
+						// cache command
+						kv.duplicateTable[op.ClientId] = LastOperationInfo{
+							seqId: op.SeqId,
+							reply: opReply,
+						}
 					}
+				case OpAppend:
+					if kv.isDuplicateOp(op.ClientId, op.SeqId) {
+						opReply = kv.duplicateTable[op.ClientId].reply
+					} else {
+						opReply.Err = kv.stateMachine.Append(op.Key, op.Value)
+						// cache command
+						kv.duplicateTable[op.ClientId] = LastOperationInfo{
+							seqId: op.SeqId,
+							reply: opReply,
+						}
+					}
+				default:
+					panic("unknown operation type")
 				}
-			default:
-				panic("unknown operation type")
+
+				if _, isLeader := kv.rf.GetState(); isLeader {
+					// notify client
+					notifyCh := kv.getNotifyChannel(msg.CommandIndex)
+					notifyCh <- opReply
+				}
+
+				// do snapshot
+				if kv.maxRaftState != -1 && kv.rf.GetRaftStateSize() >= kv.maxRaftState {
+					kv.doSnapshot(msg.CommandIndex)
+				}
+
+				kv.mu.Unlock()
 			}
 
-			if _, isLeader := kv.rf.GetState(); isLeader {
-				// notify client
-				notifyCh := kv.getNotifyChannel(msg.CommandIndex)
-				notifyCh <- opReply
-			}
-
-			kv.mu.Unlock()
 		}
 	}
 }
@@ -233,4 +246,38 @@ func (kv *KVServer) applyTicker() {
 func (kv *KVServer) isDuplicateOp(clientId, seqId int64) bool {
 	reply, ok := kv.duplicateTable[clientId]
 	return ok && reply.seqId <= seqId
+}
+
+func (kv *KVServer) doSnapshot(index int) {
+	// kvserver to store state machine and duplicate table
+	writer := new(bytes.Buffer)
+	enc := encoding.NewEncoder(writer)
+	_ = enc.Encode(kv.stateMachine)
+	_ = enc.Encode(kv.duplicateTable)
+
+	kv.rf.Snapshot(index, writer.Bytes())
+}
+
+func (kv *KVServer) readSnapshot(snapshot []byte) {
+	if len(snapshot) == 0 {
+		return
+	}
+
+	// read state machine and duplicate table from snapshot
+	reader := bytes.NewBuffer(snapshot)
+	dec := encoding.NewDecoder(reader)
+
+	var stateMachine MemoryKVStateMachine
+	if err := dec.Decode(&stateMachine); err != nil {
+		panic(err)
+	}
+
+	var duplicateTable map[int64]LastOperationInfo
+	if err := dec.Decode(&duplicateTable); err != nil {
+		panic(err)
+	}
+
+	kv.stateMachine = &stateMachine
+	kv.duplicateTable = duplicateTable
+
 }

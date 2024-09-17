@@ -25,20 +25,11 @@ func NewClerk(servers []*rpc.ClientEnd) *Clerk {
 	return ck
 }
 
-type GetArgs struct {
-	Key string
-}
-
-type GetReply struct {
-	Value string
-	Err   error
-}
-
 func (ck *Clerk) Get(key string) string {
 	args := GetArgs{Key: key}
 	for {
 		reply := &GetReply{}
-		ok := ck.servers[ck.leaderId].Call("Server.Get", args, reply)
+		ok := ck.servers[ck.leaderId].Call("KVServer.Get", args, reply)
 		if !ok || errors.Is(reply.Err, ErrWrongLeader) || errors.Is(reply.Err, ErrTimeout) {
 			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 			continue
@@ -48,53 +39,32 @@ func (ck *Clerk) Get(key string) string {
 
 }
 
-type PutArgs struct {
-	Key      string
-	Value    string
-	ClientId int64
-	SeqId    int64
-}
-
-type PutReply struct {
-	Err error
+func (ck *Clerk) putAppend(key string, value string, op OperationType) {
+	args := PutAppendArgs{
+		Key:      key,
+		Value:    value,
+		Op:       op,
+		ClientId: ck.clientId,
+		SeqId:    ck.seqId,
+	}
+	for {
+		var reply PutAppendReply
+		ok := ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply)
+		if !ok || errors.Is(reply.Err, ErrWrongLeader) || errors.Is(reply.Err, ErrTimeout) {
+			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
+			continue
+		}
+		ck.seqId++
+		return
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
-	args := PutArgs{
-		Key:      key,
-		Value:    value,
-		ClientId: ck.clientId,
-		SeqId:    ck.seqId,
-	}
-	for {
-		reply := &GetReply{}
-		ok := ck.servers[ck.leaderId].Call("Server.Put", args, reply)
-		if !ok || errors.Is(reply.Err, ErrWrongLeader) || errors.Is(reply.Err, ErrTimeout) {
-			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
-			continue
-		}
-		ck.seqId++
-		return
-	}
+	ck.putAppend(key, value, OpPut)
 }
 
 func (ck *Clerk) Append(key string, value string) {
-	args := PutArgs{
-		Key:      key,
-		Value:    value,
-		ClientId: ck.clientId,
-		SeqId:    ck.seqId,
-	}
-	for {
-		reply := &GetReply{}
-		ok := ck.servers[ck.leaderId].Call("Server.Append", args, reply)
-		if !ok || errors.Is(reply.Err, ErrWrongLeader) || errors.Is(reply.Err, ErrTimeout) {
-			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
-			continue
-		}
-		ck.seqId++
-		return
-	}
+	ck.putAppend(key, value, OpAppend)
 }
 
 func nrand() int64 {

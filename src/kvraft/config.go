@@ -1,9 +1,6 @@
 package kvraft
 
-import (
-	"raft-kv/raft"
-	"raft-kv/rpc"
-)
+import "raft-kv/rpc"
 import "testing"
 import "os"
 
@@ -14,6 +11,7 @@ import "math/rand"
 import "encoding/base64"
 import "sync"
 import "runtime"
+import "raft-kv/raft"
 import "fmt"
 import "time"
 import "sync/atomic"
@@ -48,7 +46,7 @@ type config struct {
 	t            *testing.T
 	net          *rpc.Network
 	n            int
-	kvservers    []*Server
+	kvservers    []*KVServer
 	saved        []*raft.Persister
 	endnames     [][]string // names of each server's sending ClientEnds
 	clerks       map[*Clerk][]string
@@ -62,7 +60,7 @@ type config struct {
 }
 
 func (cfg *config) checkTimeout() {
-	// enforce a two minutes real-time limit on each test
+	// enforce a two minute real-time limit on each test
 	if !cfg.t.Failed() && time.Since(cfg.start) > 120*time.Second {
 		cfg.t.Fatal("test took longer than 120 seconds")
 	}
@@ -305,7 +303,7 @@ func (cfg *config) StartServer(i int) {
 	// a fresh persister, so old instance doesn't overwrite
 	// new instance's persisted state.
 	// give the fresh persister a copy of the old persister's
-	// state, so that the spec is that we pass StartKVServer()
+	// state, so that the spec is that we pass StartServer()
 	// the last persisted state.
 	if cfg.saved[i] != nil {
 		cfg.saved[i] = cfg.saved[i].Copy()
@@ -314,7 +312,7 @@ func (cfg *config) StartServer(i int) {
 	}
 	cfg.mu.Unlock()
 
-	cfg.kvservers[i] = NewServer(ends, i, cfg.saved[i], cfg.maxraftstate)
+	cfg.kvservers[i] = NewKVServer(ends, i, cfg.saved[i], cfg.maxraftstate)
 
 	kvsvc := rpc.NewService(cfg.kvservers[i])
 	rfsvc := rpc.NewService(cfg.kvservers[i].rf)
@@ -371,7 +369,7 @@ func make_config(t *testing.T, n int, unreliable bool, maxraftstate int) *config
 	cfg.t = t
 	cfg.net = rpc.NewNetwork()
 	cfg.n = n
-	cfg.kvservers = make([]*Server, cfg.n)
+	cfg.kvservers = make([]*KVServer, cfg.n)
 	cfg.saved = make([]*raft.Persister, cfg.n)
 	cfg.endnames = make([][]string, cfg.n)
 	cfg.clerks = make(map[*Clerk][]string)

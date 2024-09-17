@@ -9,14 +9,14 @@ import (
 	"time"
 )
 
-// 1. Servers receive application layer's command from "Get, Put, Append" methods,
+// 1. KVServers receive application layer's command from "Get, Put, Append" methods,
 // 2. it will write the log first through apply chan,
 // then if it's leader it will listen to notify channel to get result from state machine before timeout
 // 3. a background thread will listen to the apply channel which gets result from raft layer,
 // if a log has been applied to raft, it will send back message to this thread, then we apply the changes to
 // state machine, after that, send result to the tmp notify channel
 
-type Server struct {
+type KVServer struct {
 	mu      sync.Mutex
 	me      int
 	rf      *raft.Raft
@@ -26,17 +26,18 @@ type Server struct {
 	maxRaftState int
 
 	notifyChs    map[int]chan *OperationReply
-	stateMachine *ClerkStateMachine
+	stateMachine *MemoryKVStateMachine
 	lastApplied  int
 
-	commandMap map[int64]*LastReply // clientId -> seqId to check the duplicate log entry
+	duplicateTable map[int64]LastOperationInfo // clientId -> seqId to check the duplicate log entry
 }
 
 type Operation struct {
-	Key    string
-	Value  string
-	OpType OperationType
-
+	// Field names must start with capital letters,
+	// otherwise RPC will break.
+	Key      string
+	Value    string
+	OpType   OperationType
 	ClientId int64
 	SeqId    int64
 }
@@ -46,35 +47,35 @@ type OperationReply struct {
 	Err   error
 }
 
-type LastReply struct {
+type LastOperationInfo struct {
 	seqId int64
 	reply *OperationReply
 }
 
-func NewServer(clientEnds []*rpc.ClientEnd, me int, persister *raft.Persister, maxRaftState int) *Server {
+func NewKVServer(clientEnds []*rpc.ClientEnd, me int, persister *raft.Persister, maxRaftState int) *KVServer {
 	encoding.Register(Operation{})
 
-	server := &Server{
+	kv := &KVServer{
 		mu:           sync.Mutex{},
 		me:           me,
 		applyCh:      make(chan raft.ApplyMessage),
 		dead:         0,
 		maxRaftState: maxRaftState,
 		notifyChs:    make(map[int]chan *OperationReply),
-		stateMachine: NewClerkStateMachine(),
+		stateMachine: NewMemoryKVStateMachine(),
 	}
-	server.applyCh = make(chan raft.ApplyMessage)
-	server.rf = raft.NewRaft(clientEnds, me, persister, server.applyCh)
+	kv.applyCh = make(chan raft.ApplyMessage)
+	kv.rf = raft.NewRaft(clientEnds, me, persister, kv.applyCh)
 
-	go server.applyTicker()
+	go kv.applyTicker()
 
-	return server
+	return kv
 }
 
 // Get  log entry, then get result from notifyChannel through state machine
-func (server *Server) Get(args GetArgs, reply *GetReply) {
+func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// apply logs in raft first
-	commandIndex, _, isLeader := server.rf.StartAppendCommandInLeader(
+	commandIndex, _, isLeader := kv.rf.StartAppendCommandInLeader(
 		Operation{
 			Key:    args.Key,
 			OpType: OpGet,
@@ -85,42 +86,41 @@ func (server *Server) Get(args GetArgs, reply *GetReply) {
 		return
 	}
 
-	server.mu.Lock()
-	notifyCh := server.getNotifyChannel(commandIndex)
-	server.mu.Unlock()
+	kv.mu.Lock()
+	notifyCh := kv.getNotifyChannel(commandIndex)
+	kv.mu.Unlock()
 
 	select {
 	case resp := <-notifyCh:
 		reply.Value = resp.Value
 		reply.Err = resp.Err
-	case <-time.After(time.Duration(5) * time.Millisecond):
+	case <-time.After(TimeoutInterval):
 		reply.Err = ErrTimeout
 	}
 
 	go func() {
-		server.mu.Lock()
-		server.deleteNotifyChannel(commandIndex)
-		server.mu.Unlock()
+		kv.mu.Lock()
+		kv.deleteNotifyChannel(commandIndex)
+		kv.mu.Unlock()
 	}()
 
 }
 
-// Put append log entry, then get result from notifyChannel through state machine
-func (server *Server) Put(args PutArgs, reply *PutReply) {
-	server.mu.Lock()
-	if server.isDuplicateOp(args.ClientId, args.SeqId) {
-		last, _ := server.commandMap[args.ClientId]
+func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	kv.mu.Lock()
+	if kv.isDuplicateOp(args.ClientId, args.SeqId) {
+		last, _ := kv.duplicateTable[args.ClientId]
 		reply.Err = last.reply.Err
-		server.mu.Unlock()
+		kv.mu.Unlock()
 		return
 	}
-	server.mu.Unlock()
+	kv.mu.Unlock()
 
-	commandIndex, _, isLeader := server.rf.StartAppendCommandInLeader(
+	commandIndex, _, isLeader := kv.rf.StartAppendCommandInLeader(
 		Operation{
 			Key:      args.Key,
 			Value:    args.Value,
-			OpType:   OpPut,
+			OpType:   args.Op,
 			ClientId: args.ClientId,
 			SeqId:    args.SeqId,
 		})
@@ -130,130 +130,87 @@ func (server *Server) Put(args PutArgs, reply *PutReply) {
 		return
 	}
 
-	server.mu.Lock()
-	notifyCh := server.getNotifyChannel(commandIndex)
-	server.mu.Unlock()
+	kv.mu.Lock()
+	notifyCh := kv.getNotifyChannel(commandIndex)
+	kv.mu.Unlock()
 
 	select {
 	case resp := <-notifyCh:
 		reply.Err = resp.Err
-	case <-time.After(time.Duration(500) * time.Millisecond):
+	case <-time.After(TimeoutInterval):
 		reply.Err = ErrTimeout
 	}
 
 	defer func() {
-		server.mu.Lock()
-		server.deleteNotifyChannel(commandIndex)
-		server.mu.Unlock()
+		kv.mu.Lock()
+		kv.deleteNotifyChannel(commandIndex)
+		kv.mu.Unlock()
 	}()
 }
 
-// Append log entry, then get result from notifyChannel through state machine
-func (server *Server) Append(args PutArgs, reply *PutReply) {
-	server.mu.Lock()
-	if server.isDuplicateOp(args.ClientId, args.SeqId) {
-		last, _ := server.commandMap[args.ClientId]
-		reply.Err = last.reply.Err
-		server.mu.Unlock()
-		return
-	}
-	server.mu.Unlock()
-
-	commandIndex, _, isLeader := server.rf.StartAppendCommandInLeader(
-		Operation{
-			Key:      args.Key,
-			Value:    args.Value,
-			OpType:   OpAppend,
-			ClientId: args.ClientId,
-			SeqId:    args.SeqId,
-		})
-
-	if !isLeader {
-		reply.Err = ErrWrongLeader
-		return
-	}
-
-	server.mu.Lock()
-	notifyCh := server.getNotifyChannel(commandIndex)
-	server.mu.Unlock()
-
-	select {
-	case resp := <-notifyCh:
-		reply.Err = resp.Err
-	case <-time.After(time.Duration(500) * time.Millisecond):
-		reply.Err = ErrTimeout
-	}
-
-	defer func() {
-		server.mu.Lock()
-		server.deleteNotifyChannel(commandIndex)
-		server.mu.Unlock()
-	}()
+func (kv *KVServer) Kill() {
+	atomic.StoreInt32(&kv.dead, 1)
+	kv.rf.Kill()
 }
 
-func (server *Server) Kill() {
-	atomic.StoreInt32(&server.dead, 1)
-	server.rf.Kill()
-}
-
-func (server *Server) Killed() bool {
-	z := atomic.LoadInt32(&server.dead)
+func (kv *KVServer) Killed() bool {
+	z := atomic.LoadInt32(&kv.dead)
 	return z == 1
 }
 
-func (server *Server) getNotifyChannel(i int) chan *OperationReply {
-	if _, ok := server.notifyChs[i]; !ok {
-		server.notifyChs[i] = make(chan *OperationReply, 1)
+func (kv *KVServer) getNotifyChannel(i int) chan *OperationReply {
+	if _, ok := kv.notifyChs[i]; !ok {
+		kv.notifyChs[i] = make(chan *OperationReply, 1)
 	}
-	return server.notifyChs[i]
+	return kv.notifyChs[i]
 }
 
-func (server *Server) deleteNotifyChannel(i int) {
-	delete(server.notifyChs, i)
+func (kv *KVServer) deleteNotifyChannel(i int) {
+	delete(kv.notifyChs, i)
 }
 
 // background thread to accept msg from application layer through applyCh
 // then send it to state machine to store the value
-func (server *Server) applyTicker() {
-	for !server.Killed() {
+func (kv *KVServer) applyTicker() {
+	for !kv.Killed() {
 		select {
-		case msg := <-server.applyCh:
+		case msg := <-kv.applyCh:
 			if !msg.CommandValid {
 				break
 			}
 
-			server.mu.Lock()
+			kv.mu.Lock()
 
 			// message has been served
-			if msg.CommandIndex <= server.lastApplied {
+			if msg.CommandIndex <= kv.lastApplied {
 				break
 			}
-			server.lastApplied = msg.CommandIndex
+			kv.lastApplied = msg.CommandIndex
 
 			op := msg.Command.(Operation)
 			var opReply *OperationReply
 
 			switch op.OpType {
 			case OpGet:
-				opReply.Value, opReply.Err = server.stateMachine.Get(op.Key)
+				opReply.Value, opReply.Err = kv.stateMachine.Get(op.Key)
 			case OpPut:
-				if server.isDuplicateOp(op.ClientId, op.SeqId) {
-					opReply = server.commandMap[op.ClientId].reply
+				if kv.isDuplicateOp(op.ClientId, op.SeqId) {
+					opReply = kv.duplicateTable[op.ClientId].reply
 				} else {
-					opReply.Err = server.stateMachine.Put(op.Key, op.Value)
+					opReply.Err = kv.stateMachine.Put(op.Key, op.Value)
 					// cache command
-					server.commandMap[op.ClientId] = &LastReply{
+					kv.duplicateTable[op.ClientId] = LastOperationInfo{
 						seqId: op.SeqId,
 						reply: opReply,
 					}
 				}
 			case OpAppend:
-				if server.isDuplicateOp(op.ClientId, op.SeqId) {
-					opReply = server.commandMap[op.ClientId].reply
+				if kv.isDuplicateOp(op.ClientId, op.SeqId) {
+					opReply = kv.duplicateTable[op.ClientId].reply
 				} else {
-					opReply.Err = server.stateMachine.Append(op.Key, op.Value)
+					opReply.Err = kv.stateMachine.Append(op.Key, op.Value)
 					// cache command
-					server.commandMap[op.ClientId] = &LastReply{
+					kv.duplicateTable[op.ClientId] = LastOperationInfo{
 						seqId: op.SeqId,
 						reply: opReply,
 					}
@@ -262,18 +219,18 @@ func (server *Server) applyTicker() {
 				panic("unknown operation type")
 			}
 
-			if _, isLeader := server.rf.GetState(); isLeader {
+			if _, isLeader := kv.rf.GetState(); isLeader {
 				// notify client
-				notifyCh := server.getNotifyChannel(msg.CommandIndex)
+				notifyCh := kv.getNotifyChannel(msg.CommandIndex)
 				notifyCh <- opReply
 			}
 
-			server.mu.Unlock()
+			kv.mu.Unlock()
 		}
 	}
 }
 
-func (server *Server) isDuplicateOp(clientId, seqId int64) bool {
-	reply, ok := server.commandMap[clientId]
+func (kv *KVServer) isDuplicateOp(clientId, seqId int64) bool {
+	reply, ok := kv.duplicateTable[clientId]
 	return ok && reply.seqId <= seqId
 }

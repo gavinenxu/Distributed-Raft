@@ -69,13 +69,15 @@ type Raft struct {
 // in part PartD you'll want to send other kinds of messages (e.g.,
 // snapshots) on the applyCh, but set CommandValid to false for these
 // other uses.
+// the message to talk with the application layer
 
 type ApplyMessage struct {
+	// handle append log entry
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
 
-	// For PartD:
+	// handle snapshot
 	SnapshotValid bool
 	Snapshot      []byte
 	SnapshotTerm  int
@@ -135,6 +137,12 @@ func (rf *Raft) GetState() (int, bool) {
 	defer rf.mu.Unlock()
 
 	return rf.currentTerm, rf.role == Leader
+}
+
+func (rf *Raft) GetRaftStateSize() int {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.persister.RaftStateSize()
 }
 
 // StartAppendCommandInLeader the service using Raft (e.g. a k/v server) wants to start

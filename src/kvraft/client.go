@@ -2,7 +2,6 @@ package kvraft
 
 import (
 	"crypto/rand"
-	"errors"
 	"math/big"
 	"raft-kv/rpc"
 )
@@ -30,7 +29,7 @@ func (ck *Clerk) Get(key string) string {
 	for {
 		reply := &GetReply{}
 		ok := ck.servers[ck.leaderId].Call("KVServer.Get", args, reply)
-		if !ok || errors.Is(reply.Err, ErrWrongLeader) || errors.Is(reply.Err, ErrTimeout) {
+		if !ok || reply.Err == ErrWrongLeader || reply.Err == ErrTimeout {
 			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 			continue
 		}
@@ -49,8 +48,8 @@ func (ck *Clerk) putAppend(key string, value string, op OperationType) {
 	}
 	for {
 		var reply PutAppendReply
-		ok := ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply)
-		if !ok || errors.Is(reply.Err, ErrWrongLeader) || errors.Is(reply.Err, ErrTimeout) {
+		ok := ck.servers[ck.leaderId].Call("KVServer.PutAppend", args, &reply)
+		if !ok || reply.Err == ErrWrongLeader || reply.Err == ErrTimeout {
 			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 			continue
 		}

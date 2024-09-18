@@ -33,39 +33,20 @@ type KVServer struct {
 	duplicateTable map[int64]LastOperationInfo // clientId -> seqId to check the duplicate log entry
 }
 
-type Operation struct {
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
-	Key      string
-	Value    string
-	OpType   OperationType
-	ClientId int64
-	SeqId    int64
-}
-
-type OperationReply struct {
-	Value string
-	Err   error
-}
-
-type LastOperationInfo struct {
-	seqId int64
-	reply *OperationReply
-}
-
 func NewKVServer(clientEnds []*rpc.ClientEnd, me int, persister *raft.Persister, maxRaftState int) *KVServer {
 	encoding.Register(Operation{})
 
 	kv := &KVServer{
-		mu:           sync.Mutex{},
-		me:           me,
-		applyCh:      make(chan raft.ApplyMessage),
-		dead:         0,
-		maxRaftState: maxRaftState,
-		notifyChs:    make(map[int]chan *OperationReply),
-		stateMachine: NewMemoryKVStateMachine(),
+		mu:             sync.Mutex{},
+		me:             me,
+		dead:           0,
+		lastApplied:    0,
+		maxRaftState:   maxRaftState,
+		stateMachine:   NewMemoryKVStateMachine(),
+		applyCh:        make(chan raft.ApplyMessage),
+		notifyChs:      make(map[int]chan *OperationReply),
+		duplicateTable: make(map[int64]LastOperationInfo),
 	}
-	kv.applyCh = make(chan raft.ApplyMessage)
 	kv.rf = raft.NewRaft(clientEnds, me, persister, kv.applyCh)
 
 	kv.readSnapshot(persister.ReadSnapshot())
@@ -76,7 +57,7 @@ func NewKVServer(clientEnds []*rpc.ClientEnd, me int, persister *raft.Persister,
 }
 
 // Get  log entry, then get result from notifyChannel through state machine
-func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+func (kv *KVServer) Get(args GetArgs, reply *GetReply) {
 	// apply logs in raft first
 	commandIndex, _, isLeader := kv.rf.StartAppendCommandInLeader(
 		Operation{
@@ -109,11 +90,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 }
 
-func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+func (kv *KVServer) PutAppend(args PutAppendArgs, reply *PutAppendReply) {
 	kv.mu.Lock()
 	if kv.isDuplicateOp(args.ClientId, args.SeqId) {
 		last, _ := kv.duplicateTable[args.ClientId]
-		reply.Err = last.reply.Err
+		reply.Err = last.Reply.Err
 		kv.mu.Unlock()
 		return
 	}
@@ -156,7 +137,7 @@ func (kv *KVServer) Kill() {
 	kv.rf.Kill()
 }
 
-func (kv *KVServer) Killed() bool {
+func (kv *KVServer) killed() bool {
 	z := atomic.LoadInt32(&kv.dead)
 	return z == 1
 }
@@ -175,7 +156,7 @@ func (kv *KVServer) deleteNotifyChannel(i int) {
 // background thread to accept msg from application layer through applyCh
 // then send it to state machine to store the value
 func (kv *KVServer) applyTicker() {
-	for !kv.Killed() {
+	for !kv.killed() {
 		select {
 		case msg := <-kv.applyCh:
 			if msg.SnapshotValid {
@@ -194,31 +175,31 @@ func (kv *KVServer) applyTicker() {
 				kv.lastApplied = msg.CommandIndex
 
 				op := msg.Command.(Operation)
-				var opReply *OperationReply
+				var opReply = &OperationReply{}
 
 				switch op.OpType {
 				case OpGet:
 					opReply.Value, opReply.Err = kv.stateMachine.Get(op.Key)
 				case OpPut:
 					if kv.isDuplicateOp(op.ClientId, op.SeqId) {
-						opReply = kv.duplicateTable[op.ClientId].reply
+						opReply = kv.duplicateTable[op.ClientId].Reply
 					} else {
 						opReply.Err = kv.stateMachine.Put(op.Key, op.Value)
 						// cache command
 						kv.duplicateTable[op.ClientId] = LastOperationInfo{
-							seqId: op.SeqId,
-							reply: opReply,
+							SeqId: op.SeqId,
+							Reply: opReply,
 						}
 					}
 				case OpAppend:
 					if kv.isDuplicateOp(op.ClientId, op.SeqId) {
-						opReply = kv.duplicateTable[op.ClientId].reply
+						opReply = kv.duplicateTable[op.ClientId].Reply
 					} else {
 						opReply.Err = kv.stateMachine.Append(op.Key, op.Value)
 						// cache command
 						kv.duplicateTable[op.ClientId] = LastOperationInfo{
-							seqId: op.SeqId,
-							reply: opReply,
+							SeqId: op.SeqId,
+							Reply: opReply,
 						}
 					}
 				default:
@@ -238,14 +219,13 @@ func (kv *KVServer) applyTicker() {
 
 				kv.mu.Unlock()
 			}
-
 		}
 	}
 }
 
 func (kv *KVServer) isDuplicateOp(clientId, seqId int64) bool {
 	reply, ok := kv.duplicateTable[clientId]
-	return ok && reply.seqId <= seqId
+	return ok && reply.SeqId >= seqId
 }
 
 func (kv *KVServer) doSnapshot(index int) {
@@ -279,5 +259,4 @@ func (kv *KVServer) readSnapshot(snapshot []byte) {
 
 	kv.stateMachine = &stateMachine
 	kv.duplicateTable = duplicateTable
-
 }

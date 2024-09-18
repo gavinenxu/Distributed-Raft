@@ -8,23 +8,19 @@ func NewMemoryKVStateMachine() *MemoryKVStateMachine {
 	return &MemoryKVStateMachine{Map: make(map[string]string)}
 }
 
-func (cm *MemoryKVStateMachine) Put(key string, value string) error {
+func (cm *MemoryKVStateMachine) Put(key string, value string) Err {
 	cm.Map[key] = value
-	return nil
+	return OK
 }
 
-func (cm *MemoryKVStateMachine) Append(key string, value string) error {
-	if _, ok := cm.Map[key]; !ok {
-		return ErrKeyNotFound
-	}
+func (cm *MemoryKVStateMachine) Append(key string, value string) Err {
 	cm.Map[key] += value
-	return nil
+	return OK
 }
 
-func (cm *MemoryKVStateMachine) Get(key string) (string, error) {
+func (cm *MemoryKVStateMachine) Get(key string) (string, Err) {
 	if val, ok := cm.Map[key]; ok {
-		return val, nil
+		return val, OK
 	}
-
 	return "", ErrKeyNotFound
 }

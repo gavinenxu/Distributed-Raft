@@ -80,16 +80,26 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 	}()
 
+	// if the leader's log index is less than current log's snapshot index, we just update the current rf log index in leader
+	if args.PrevLogIndex < rf.log.snapLastIndex {
+		reply.ConflictTerm = InvalidTerm
+		reply.ConflictIndex = rf.log.size()
+
+		SysLog(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log, Follower's Snapshot index is too long, Len:%d > Prev:%d", args.LeaderId, rf.log.size(), args.PrevLogIndex)
+		return
+	}
+
 	// check if log matched
 	if args.PrevLogIndex >= rf.log.size() {
 		// 1. in the case, leader's log is much longer than this follower's log
-		// then this candidate's term is valid, because it's far behind leader
+		// then this candidate's term is valid, because it's far behind leader, sent follower's log index back to leader
 		reply.ConflictTerm = InvalidTerm
 		reply.ConflictIndex = rf.log.size()
 
 		SysLog(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log, Follower log is too short, Len:%d <= Prev:%d", args.LeaderId, rf.log.size(), args.PrevLogIndex)
 		return
 	}
+
 	if args.PrevLogTerm != rf.log.getLogAtIndex(args.PrevLogIndex).Term {
 		// 2. in the case, follower's log is longer, but with different term from leader's
 		// then this follower should align with leader's log, and ignore all the logs which beyond leader's
@@ -102,7 +112,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Success = true
 
-	// update follower's log
+	// update follower's log in the case follower's log is longer, and they have the same term
 	rf.log.appendEntriesAfterIndex(args.PrevLogIndex, args.Entries)
 	SysLog(rf.me, rf.currentTerm, DLog2, "Follower append logs: [%d, %d]", args.PrevLogIndex+1, rf.log.size())
 

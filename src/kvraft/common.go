@@ -29,7 +29,8 @@ type GetArgs struct {
 
 type GetReply struct {
 	Value string
-	Err   Err
+	// Err can't set to error through rpc, will encounter "unexpected EOF"
+	Err Err
 }
 
 type PutAppendArgs struct {
@@ -41,6 +42,7 @@ type PutAppendArgs struct {
 }
 
 type PutAppendReply struct {
+	// Err can't set to error through rpc, will encounter "unexpected EOF"
 	Err Err
 }
 

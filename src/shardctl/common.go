@@ -1,5 +1,11 @@
 package shardctl
 
+import (
+	"crypto/rand"
+	"math/big"
+	"time"
+)
+
 //
 // Shard controler: assigns shards to replication groups.
 //
@@ -34,6 +40,15 @@ func DefaultConfig() Config {
 	}
 }
 
+const TimeOutInterval = time.Duration(5) * time.Millisecond
+
+type Err string
+
+var (
+	ErrWrongLeader Err = "wrong leader"
+	ErrTimeout     Err = "timeout"
+)
+
 type OperationType byte
 
 const (
@@ -42,3 +57,76 @@ const (
 	OpLeave
 	OpMove
 )
+
+type QueryArgs struct {
+	Num      int // desired config number
+	ClientId int64
+	SeqId    int64
+}
+
+type QueryReply struct {
+	Err    Err
+	Config Config
+}
+
+type JoinArgs struct {
+	Servers  map[int][]string // new GID -> servers mappings
+	ClientId int64
+	SeqId    int64
+}
+
+type JoinReply struct {
+	Err Err
+}
+
+type LeaveArgs struct {
+	GIDs     []int
+	ClientId int64
+	SeqId    int64
+}
+
+type LeaveReply struct {
+	Err Err
+}
+
+type MoveArgs struct {
+	Shard    int
+	GID      int
+	ClientId int64
+	SeqId    int64
+}
+
+type MoveReply struct {
+	Err Err
+}
+
+// types for server
+
+type Operation struct {
+	OpType OperationType
+
+	Num      int              // Query
+	Servers  map[int][]string // Join
+	GIDs     []int            // Leave
+	Shard    int              // Move
+	GID      int              // Move
+	ClientId int64
+	SeqId    int64
+}
+
+type OperationReply struct {
+	CtlConfig Config
+	Err       Err
+}
+
+type LastReply struct {
+	seqId int64
+	reply *OperationReply
+}
+
+func nrand() int64 {
+	MAX := big.NewInt(int64(1) << 62)
+	bigx, _ := rand.Int(rand.Reader, MAX)
+	x := bigx.Int64()
+	return x
+}

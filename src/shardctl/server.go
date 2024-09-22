@@ -16,33 +16,10 @@ type ShardCtrler struct {
 	applyCh chan raft.ApplyMessage
 	dead    int32
 
-	notifyChs    map[int]chan *OperationReply
-	stateMachine *StateMachine
-	lastApplied  int
-
-	commandMap map[int64]*LastReply // clientId -> seqId to check the duplicate log entry
-}
-
-type Operation struct {
-	OpType OperationType
-
-	Num      int              // Query
-	Servers  map[int][]string // Join
-	GIDs     []int            // Leave
-	Shard    int              // Move
-	GID      int              // Move
-	ClientId int64
-	SeqId    int64
-}
-
-type OperationReply struct {
-	CtlConfig Config
-	Err       error
-}
-
-type LastReply struct {
-	seqId int64
-	reply *OperationReply
+	notifyChs      map[int]chan *OperationReply
+	stateMachine   *StateMachine
+	lastApplied    int
+	duplicateTable map[int64]*LastReply // clientId -> seqId to check the duplicate log entry
 }
 
 func NewShardController(clientEnds []*rpc.ClientEnd, me int, persister *raft.Persister) *ShardCtrler {
@@ -64,53 +41,53 @@ func NewShardController(clientEnds []*rpc.ClientEnd, me int, persister *raft.Per
 	return ctler
 }
 
-func (ctler *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
+func (ctler *ShardCtrler) Query(args QueryArgs, reply *QueryReply) {
 	queryReply := OperationReply{}
-	ctler.command(
-		Operation{
-			OpType:   OpQuery,
-			Num:      args.Num,
-			ClientId: args.ClientId,
-			SeqId:    args.SeqId,
-		}, &queryReply)
+	ctler.command(Operation{
+		OpType:   OpQuery,
+		Num:      args.Num,
+		ClientId: args.ClientId,
+		SeqId:    args.SeqId,
+	}, &queryReply)
+
 	reply.Err = queryReply.Err
 	reply.Config = queryReply.CtlConfig
 }
 
-func (ctler *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
+func (ctler *ShardCtrler) Join(args JoinArgs, reply *JoinReply) {
 	queryReply := OperationReply{}
-	ctler.command(
-		Operation{
-			OpType:   OpJoin,
-			Servers:  args.Servers,
-			ClientId: args.ClientId,
-			SeqId:    args.SeqId,
-		}, &queryReply)
+	ctler.command(Operation{
+		OpType:   OpJoin,
+		Servers:  args.Servers,
+		ClientId: args.ClientId,
+		SeqId:    args.SeqId,
+	}, &queryReply)
+
 	reply.Err = queryReply.Err
 }
 
-func (ctler *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
+func (ctler *ShardCtrler) Leave(args LeaveArgs, reply *LeaveReply) {
 	queryReply := OperationReply{}
-	ctler.command(
-		Operation{
-			OpType:   OpLeave,
-			GIDs:     args.GIDs,
-			ClientId: args.ClientId,
-			SeqId:    args.SeqId,
-		}, &queryReply)
+	ctler.command(Operation{
+		OpType:   OpLeave,
+		GIDs:     args.GIDs,
+		ClientId: args.ClientId,
+		SeqId:    args.SeqId,
+	}, &queryReply)
+
 	reply.Err = queryReply.Err
 }
 
-func (ctler *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
+func (ctler *ShardCtrler) Move(args MoveArgs, reply *MoveReply) {
 	queryReply := OperationReply{}
-	ctler.command(
-		Operation{
-			OpType:   OpMove,
-			Shard:    args.Shard,
-			GID:      args.GID,
-			ClientId: args.ClientId,
-			SeqId:    args.SeqId,
-		}, &queryReply)
+	ctler.command(Operation{
+		OpType:   OpMove,
+		Shard:    args.Shard,
+		GID:      args.GID,
+		ClientId: args.ClientId,
+		SeqId:    args.SeqId,
+	}, &queryReply)
+
 	reply.Err = queryReply.Err
 }
 
@@ -118,7 +95,7 @@ func (ctler *ShardCtrler) command(args Operation, reply *OperationReply) {
 	if args.OpType != OpQuery {
 		ctler.mu.Lock()
 		if ctler.isDuplicateOp(args.ClientId, args.SeqId) {
-			last, _ := ctler.commandMap[args.ClientId]
+			last, _ := ctler.duplicateTable[args.ClientId]
 			reply.Err = last.reply.Err
 			ctler.mu.Unlock()
 			return
@@ -143,7 +120,7 @@ func (ctler *ShardCtrler) command(args Operation, reply *OperationReply) {
 			reply.CtlConfig = resp.CtlConfig
 		}
 		reply.Err = resp.Err
-	case <-time.After(time.Duration(5) * time.Millisecond):
+	case <-time.After(TimeOutInterval):
 		reply.Err = ErrTimeout
 	}
 
@@ -155,7 +132,7 @@ func (ctler *ShardCtrler) command(args Operation, reply *OperationReply) {
 }
 
 func (ctler *ShardCtrler) applyTicker() {
-	for !ctler.Killed() {
+	for !ctler.killed() {
 		select {
 		case msg := <-ctler.applyCh:
 			if !msg.CommandValid {
@@ -171,25 +148,25 @@ func (ctler *ShardCtrler) applyTicker() {
 			ctler.lastApplied = msg.CommandIndex
 
 			op := msg.Command.(Operation)
-			var opReply *OperationReply
+			var opReply = &OperationReply{}
 
 			switch op.OpType {
 			case OpQuery:
 			case OpJoin:
 				if ctler.isDuplicateOp(op.ClientId, op.SeqId) {
-					opReply = ctler.commandMap[op.ClientId].reply
+					opReply = ctler.duplicateTable[op.ClientId].reply
 				} else {
 
 				}
 			case OpLeave:
 				if ctler.isDuplicateOp(op.ClientId, op.SeqId) {
-					opReply = ctler.commandMap[op.ClientId].reply
+					opReply = ctler.duplicateTable[op.ClientId].reply
 				} else {
 
 				}
 			case OpMove:
 				if ctler.isDuplicateOp(op.ClientId, op.SeqId) {
-					opReply = ctler.commandMap[op.ClientId].reply
+					opReply = ctler.duplicateTable[op.ClientId].reply
 				} else {
 
 				}
@@ -213,9 +190,14 @@ func (ctler *ShardCtrler) Kill() {
 	ctler.rf.Kill()
 }
 
-func (ctler *ShardCtrler) Killed() bool {
+func (ctler *ShardCtrler) killed() bool {
 	z := atomic.LoadInt32(&ctler.dead)
 	return z == 1
+}
+
+// Raft needed by shardkv tester
+func (sc *ShardCtrler) Raft() *raft.Raft {
+	return sc.rf
 }
 
 func (ctler *ShardCtrler) getNotifyChannel(i int) chan *OperationReply {
@@ -226,8 +208,8 @@ func (ctler *ShardCtrler) getNotifyChannel(i int) chan *OperationReply {
 }
 
 func (ctler *ShardCtrler) isDuplicateOp(clientId, seqId int64) bool {
-	reply, ok := ctler.commandMap[clientId]
-	return ok && reply.seqId <= seqId
+	reply, ok := ctler.duplicateTable[clientId]
+	return ok && reply.seqId >= seqId
 }
 
 func (ctler *ShardCtrler) deleteNotifyChannel(i int) {

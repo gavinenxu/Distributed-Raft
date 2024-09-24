@@ -152,23 +152,26 @@ func (ctler *ShardCtrler) applyTicker() {
 
 			switch op.OpType {
 			case OpQuery:
+				conf, err := ctler.stateMachine.Query(op.Num)
+				opReply.CtlConfig = conf
+				opReply.Err = err
 			case OpJoin:
 				if ctler.isDuplicateOp(op.ClientId, op.SeqId) {
 					opReply = ctler.duplicateTable[op.ClientId].reply
 				} else {
-
+					opReply.Err = ctler.stateMachine.Join(op.Servers)
 				}
 			case OpLeave:
 				if ctler.isDuplicateOp(op.ClientId, op.SeqId) {
 					opReply = ctler.duplicateTable[op.ClientId].reply
 				} else {
-
+					opReply.Err = ctler.stateMachine.Leave(op.GIDs)
 				}
 			case OpMove:
 				if ctler.isDuplicateOp(op.ClientId, op.SeqId) {
 					opReply = ctler.duplicateTable[op.ClientId].reply
 				} else {
-
+					opReply.Err = ctler.stateMachine.Move(op.Shard, op.GID)
 				}
 			default:
 				panic("unknown operation type")

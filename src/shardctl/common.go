@@ -40,13 +40,17 @@ func DefaultConfig() Config {
 	}
 }
 
+const InvalidGroupId = 0
+
 const TimeOutInterval = time.Duration(5) * time.Millisecond
 
 type Err string
 
 var (
-	ErrWrongLeader Err = "wrong leader"
-	ErrTimeout     Err = "timeout"
+	OK              Err = "ok"
+	ErrWrongLeader  Err = "wrong leader"
+	ErrTimeout      Err = "timeout"
+	ErrInvalidGroup Err = "invalid group"
 )
 
 type OperationType byte
